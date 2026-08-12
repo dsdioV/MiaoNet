@@ -43,6 +43,8 @@ public sealed partial class MiaoHttpService : BackgroundService
 
         requestHandlers = new()
         {
+            ["/"] = Admin,
+            ["/admin"] = Admin,
             ["/status"] = Status,
             ["/player"] = Player,
             ["/announce"] = Announce,

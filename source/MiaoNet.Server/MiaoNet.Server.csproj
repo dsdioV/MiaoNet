@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -35,6 +35,10 @@
     <None Update="content.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Http/admin.html" LogicalName="admin.html" Visible="false" />
   </ItemGroup>
 
   <ItemGroup Condition="$(UseLocalhostPfx) == 'true'">

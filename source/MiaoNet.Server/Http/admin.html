@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理后台 - MiaoNet</title>
+<style>
+*{box-sizing:border-box;}
+html{color-scheme:dark;}
+body{background:#0a0e14;color:#c8d3d8;margin:0;font-family:"Segoe UI","Microsoft YaHei",sans-serif;}
+a{color:#00e5ff;text-decoration:none;}
+.mono{font-family:Consolas,"Courier New",monospace;}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:center;gap:16px;padding:0 24px;height:52px;background:rgba(10,14,20,.92);
+  border-bottom:1px solid rgba(0,229,255,.25);position:sticky;top:0;z-index:50;}
+.brand{font-size:15px;font-weight:600;letter-spacing:3px;color:#00e5ff;
+  font-family:Consolas,"Courier New",monospace;text-shadow:0 0 8px rgba(0,229,255,.5);}
+.brand-sub{color:#5f7a85;letter-spacing:2px;margin-left:8px;font-size:12px;text-shadow:none;}
+.live{display:flex;align-items:center;gap:6px;font-size:12px;color:#00ff9c;letter-spacing:2px;}
+.live .dot{width:8px;height:8px;background:#00ff9c;border-radius:50%;box-shadow:0 0 6px rgba(0,255,156,.7);}
+.live.down{color:#ff3860;}
+.live.down .dot{background:#ff3860;box-shadow:0 0 6px rgba(255,56,96,.7);}
+.spacer{flex:1;}
+.user{font-size:12px;color:#5f7a85;font-family:Consolas,"Courier New",monospace;}
+
+/* ---------- layout ---------- */
+main{padding:18px 24px 60px;max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:16px;}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
+
+/* ---------- panels ---------- */
+.panel{background:rgba(13,17,23,.9);border:1px solid rgba(0,229,255,.18);padding:14px 16px;position:relative;}
+.panel::before,.panel::after{content:"";position:absolute;width:10px;height:10px;pointer-events:none;}
+.panel::before{top:-1px;left:-1px;border-top:1px solid rgba(0,229,255,.7);border-left:1px solid rgba(0,229,255,.7);}
+.panel::after{bottom:-1px;right:-1px;border-bottom:1px solid rgba(0,229,255,.7);border-right:1px solid rgba(0,229,255,.7);}
+.sec-title{font-size:12px;margin:0 0 12px;color:#9fdcec;letter-spacing:4px;text-transform:uppercase;font-weight:600;
+  display:flex;align-items:center;gap:8px;}
+.sec-title::before{content:"";width:8px;height:8px;background:#00e5ff;box-shadow:0 0 8px rgba(0,229,255,.8);flex:none;}
+
+/* ---------- stat cards ---------- */
+.card{background:rgba(13,17,23,.9);border:1px solid rgba(0,229,255,.18);padding:12px 14px;position:relative;}
+.card .label{font-size:11px;color:#5f7a85;margin-bottom:6px;letter-spacing:2px;}
+.card .value{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#00e5ff;
+  font-family:Consolas,"Courier New",monospace;text-shadow:0 0 10px rgba(0,229,255,.4);}
+
+/* ---------- table ---------- */
+.table-wrap{max-height:360px;overflow-y:auto;border:1px solid rgba(0,229,255,.1);}
+table{border-collapse:collapse;width:100%;font-family:Consolas,"Courier New",monospace;}
+th,td{border-bottom:1px solid rgba(0,229,255,.08);padding:7px 10px;text-align:left;font-size:12px;}
+th{color:#4f99a8;font-weight:500;background:rgba(0,229,255,.05);letter-spacing:1px;position:sticky;top:0;}
+tbody tr:hover{background:rgba(0,229,255,.05);}
+.empty{color:#3d5560;padding:18px;text-align:center;}
+
+/* ---------- inputs & buttons ---------- */
+input{background:#0a0e14;border:1px solid rgba(0,229,255,.25);color:#c8d3d8;padding:8px 10px;font-size:13px;
+  font-family:Consolas,"Courier New",monospace;}
+input:focus{outline:none;border-color:#00e5ff;box-shadow:0 0 0 1px rgba(0,229,255,.35),0 0 12px rgba(0,229,255,.15);}
+input::placeholder{color:#3d5560;}
+button{font-family:inherit;letter-spacing:1px;}
+button.act{background:rgba(0,229,255,.1);color:#00e5ff;border:1px solid rgba(0,229,255,.5);padding:8px 16px;
+  cursor:pointer;font-size:13px;}
+button.act:hover{background:rgba(0,229,255,.2);box-shadow:0 0 12px rgba(0,229,255,.3);}
+button.act:active{transform:translateY(1px);}
+button.kick{background:none;border:1px solid rgba(255,56,96,.5);color:#ff6b81;padding:4px 10px;cursor:pointer;
+  font-size:12px;font-family:Consolas,"Courier New",monospace;}
+button.kick:hover{background:rgba(255,56,96,.15);color:#ff3860;}
+.bar{display:flex;gap:10px;margin-bottom:12px;}
+.bar input{flex:1;max-width:480px;}
+
+/* ---------- toasts ---------- */
+#toasts{position:fixed;top:64px;right:24px;z-index:100;display:flex;flex-direction:column;gap:8px;}
+.toast{padding:10px 16px;font-size:12px;background:rgba(10,14,20,.95);max-width:380px;
+  font-family:Consolas,"Courier New",monospace;letter-spacing:1px;}
+.toast.ok{border:1px solid rgba(0,255,156,.6);color:#00ff9c;box-shadow:0 0 14px rgba(0,255,156,.15);}
+.toast.err{border:1px solid rgba(255,56,96,.6);color:#ff6b81;box-shadow:0 0 14px rgba(255,56,96,.15);}
+.toast.out{opacity:0;transition:opacity .25s;}
+
+/* ---------- scrollbars ---------- */
+::-webkit-scrollbar{width:8px;height:8px;}
+::-webkit-scrollbar-track{background:#070a0f;}
+::-webkit-scrollbar-thumb{background:rgba(0,229,255,.2);border:1px solid rgba(0,229,255,.1);}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">MIAONET<span class="brand-sub">管理后台</span></div>
+  <div class="live" id="live"><span class="dot"></span><span id="live-text">实时</span></div>
+  <div class="spacer"></div>
+</header>
+
+<main>
+  <div class="cards">
+    <div class="card"><div class="label">在线玩家</div><div class="value" id="d-players">-</div></div>
+    <div class="card"><div class="label">频道数</div><div class="value" id="d-channels">-</div></div>
+  </div>
+
+  <section class="panel">
+    <h2 class="sec-title">广播公告</h2>
+    <div class="bar">
+      <input id="announce-input" placeholder="&gt; 广播公告内容..." maxlength="200">
+      <button class="act" id="announce-send">发送公告</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 class="sec-title">在线玩家</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>连接 ID</th><th>名称</th><th>频道</th><th>位置</th><th>操作</th></tr></thead>
+        <tbody id="players-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 class="sec-title">频道</h2>
+    <div class="table-wrap" style="max-height:150px;">
+      <table>
+        <thead><tr><th>ID</th><th>名称</th><th>玩家数</th></tr></thead>
+        <tbody id="channels-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+
+function toast(msg, ok) {
+  const t = document.createElement("div");
+  t.className = "toast " + (ok ? "ok" : "err");
+  t.textContent = (ok ? "[OK] " : "[ERR] ") + msg;
+  $("#toasts").appendChild(t);
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 300); }, 3200);
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---- 玩家列表 ----
+let failCount = 0;
+async function refresh() {
+  let data;
+  try {
+    const r = await fetch("/status");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    data = await r.json();
+  } catch (e) {
+    failCount++;
+    $("#live").classList.add("down");
+    $("#live-text").textContent = "重连中 (" + failCount + ")";
+    return;
+  }
+  failCount = 0;
+  $("#live").classList.remove("down");
+  $("#live-text").textContent = "实时";
+  $("#d-players").textContent = data.PlayersCount;
+  $("#d-channels").textContent = data.Channels.length;
+
+  const pb = $("#players-body");
+  pb.innerHTML = "";
+  let players = [];
+  for (const c of data.Channels)
+    for (const p of c.Players) players.push({ ...p, channel: c.Name });
+  if (players.length === 0) {
+    pb.innerHTML = '<tr><td colspan="5" class="empty">当前没有在线玩家</td></tr>';
+  } else {
+    for (const p of players) {
+      const tr = document.createElement("tr");
+      const loc = (p.Location ?? "").trim() || "-";
+      tr.innerHTML = "<td>" + p.ID + "</td><td>" + esc(p.Name) + "</td><td>" + esc(p.channel) +
+        "</td><td>" + esc(loc) + "</td>";
+      const td = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.className = "kick"; btn.textContent = "踢出";
+      btn.addEventListener("click", () => kick(p));
+      td.appendChild(btn); tr.appendChild(td);
+      pb.appendChild(tr);
+    }
+  }
+
+  const cb = $("#channels-body");
+  cb.innerHTML = "";
+  if (data.Channels.length === 0) {
+    cb.innerHTML = '<tr><td colspan="3" class="empty">当前没有频道</td></tr>';
+  } else {
+    for (const c of data.Channels) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + c.ID + "</td><td>" + esc(c.Name) + "</td><td>" + c.Players.length + "</td>";
+      cb.appendChild(tr);
+    }
+  }
+}
+
+// ---- 踢人 ----
+async function kick(p) {
+  const reason = prompt("踢出 " + p.Name + "（连接 " + p.ID + "）的原因（可留空）：", "");
+  if (reason === null) return;
+  if (!confirm("确定要踢出 " + p.Name + " 吗？")) return;
+  try {
+    const url = "/player?cid=" + encodeURIComponent(p.ID) + "&reason=" + encodeURIComponent(reason);
+    const r = await fetch(url, { method: "DELETE" });
+    if (r.status === 204) { toast("已踢出 " + p.Name, true); refresh(); }
+    else if (r.status === 404) toast("玩家 " + p.Name + " 已不在线", false);
+    else toast("踢出失败 (HTTP " + r.status + ")", false);
+  } catch (e) { toast("请求失败", false); }
+}
+
+// ---- 发公告 ----
+async function sendAnnounce() {
+  const input = $("#announce-input");
+  const msg = input.value.trim();
+  if (!msg) { toast("公告内容不能为空", false); return; }
+  try {
+    const r = await fetch("/announce?msg=" + encodeURIComponent(msg));
+    if (r.status === 204) { toast("公告已发送", true); input.value = ""; }
+    else toast("发送失败 (HTTP " + r.status + ")", false);
+  } catch (e) { toast("请求失败", false); }
+}
+$("#announce-send").addEventListener("click", sendAnnounce);
+$("#announce-input").addEventListener("keydown", e => { if (e.key === "Enter") sendAnnounce(); });
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -9,6 +9,19 @@ namespace MiaoNet.Server;
 
 public partial class MiaoHttpService
 {
+    private Task Admin(NameValueCollection query, HttpListenerContext context)
+    {
+        Stream? stream = typeof(MiaoHttpService).Assembly.GetManifestResourceStream("admin.html");
+        if (stream is null)
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.NotFound;
+            return Task.CompletedTask;
+        }
+        context.Response.ContentType = "text/html; charset=utf-8";
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+        return stream.CopyToAsync(context.Response.OutputStream);
+    }
+
     // TODO uh, we may need to switch our connection id fully to auth id
     // TODO don't use MiaoServerServices directly, use sth like IMiaoServerService
     private async Task Player(NameValueCollection query, HttpListenerContext context)
