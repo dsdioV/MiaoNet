@@ -1,14 +1,14 @@
 {
   "Announcements": {
     "SChinese": {
-      "PlayerJoined": "[Server] 欢迎 (0) 来到蔚蓝 MiaoNet！",
+      "PlayerJoined": "[Server] 欢迎 (0) 来到 \\sMiaoNet\\sVerðandi！",
       "PlayerLeft": "[Server] Cya，(0)！",
-      "PlayerJoinMessage": "[Server] 欢迎来到 MiaoNet dev 服务器\n[Server] 按下 T 打开聊天\n[Server] 使用 /help 获取所有指令帮助"
+      "PlayerJoinMessage": "[Server] 欢迎来到 MiaoNet \\sdev\\s Verðandi 服务器\n[Server] 按下 T 打开聊天, 使用 /help 获取所有指令帮助\n[Server] 下面是一个较为简略的规则:\n[Server] 1. 本服为全年龄服务器, 注意言辞分寸, 勿发 NSFW 内容\n[Server] 2. 尊重他人: 不要发表骚扰/歧视/攻击他人的言论\n[Server] 3. 不要干扰他人: 刷屏/遮挡画面/故意捣乱\n[Server] 4. 其它未在此列出的规则 (如群公告中的那些) 也仍然有效\n[Server] 遇到问题或想举报玩家请联系管理, 完整群规见群公告与论坛\n[Server] 祝爬山愉快 :)"
     },
     "English": {
-      "PlayerJoined": "[Server] Welcome (0) to MiaoNet!",
+      "PlayerJoined": "[Server] Welcome (0) to \\sMiaoNet\\sVerðandi!",
       "PlayerLeft": "[Server] Cya, (0)!",
-      "PlayerJoinMessage": "[Server] Welcome to MiaoNet dev server\n[Server] Press T to chat\n[Server] Use /help to get all command help"
+      "PlayerJoinMessage": "[Server] Welcome to the MiaoNet \\sdev\\s Verðandi server\n[Server] Press T to chat, use /help for all commands\n[Server] Below is a brief set of rules:\n[Server] 1. This is an all-ages server: watch your words, no NSFW content\n[Server] 2. Respect others: no harassment, discrimination or attacks\n[Server] 3. Don't disrupt others: no spam, screen-blocking or trolling\n[Server] 4. Rules not listed here (e.g. those in group announcements) still apply\n[Server] For issues or player reports, contact the admins\n[Server] Full rules in group announcement & forum. Happy climbing :)"
     }
   }
 }
