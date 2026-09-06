@@ -43,7 +43,8 @@ public sealed partial class MiaoServerConnection : IDisposable
         EndPoint endPoint,
         string hostName,
         bool revocationCheck,
-        CancellationToken token
+        CancellationToken token,
+        bool headFirst = true
     )
     {
         Socket socket = new(SocketType.Stream, ProtocolType.Tcp);
@@ -51,7 +52,10 @@ public sealed partial class MiaoServerConnection : IDisposable
 
         await socket.ConnectAsync(endPoint, token);
         NetworkStream networkStream = new NetworkStream(socket);
-        await networkStream.WriteAsync(Connection.HandshakeHead, token);
+        // wip-based servers expect the plaintext handshake head before TLS,
+        // alpha-based ones expect TLS first and the head afterwards.
+        if (headFirst)
+            await networkStream.WriteAsync(Connection.HandshakeHead, token);
 
 #if !USE_LOCALHOST_PFX
         var sslStream = new SslStream(networkStream, false, (sender, certificate, chain, errors) =>
@@ -91,6 +95,8 @@ public sealed partial class MiaoServerConnection : IDisposable
         };
 
         await sslStream.AuthenticateAsClientAsync(options, token);
+        if (!headFirst)
+            await sslStream.WriteAsync(Connection.HandshakeHead, token);
 
         return new(socket, sslStream);
     }

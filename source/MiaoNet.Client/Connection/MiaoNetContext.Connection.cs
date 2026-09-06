@@ -191,7 +191,9 @@ partial class MiaoNetContext
             try
             {
                 bool revocationCheck = !MiaoNetModule.Settings.IgnoreCertRevocationStatus;
-                connection = await MiaoServerConnection.CreateAsync(ep, operation.TargetServer, revocationCheck, token);
+                // alpha-based servers expect TLS first and the handshake head afterwards.
+                bool headFirst = MiaoNetModule.Settings.Target is not MiaoNetModuleSettings.ServerTarget.MiaoNetAlpha;
+                connection = await MiaoServerConnection.CreateAsync(ep, operation.TargetServer, revocationCheck, token, headFirst);
                 operation.SetConnection(connection);
 
                 Version localVersion = Connection.Version;

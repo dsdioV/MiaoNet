@@ -27,18 +27,22 @@ public static class MenuMiaoNetOptions
 
         // -- MiaoNet --
 
-        item = new TextMenu.OnOff(
+        var context = MiaoNetModule.Instance.MiaoNetContext;
+        var connectToggle = new TextMenu.OnOff(
             Dialog.Get("miaonet_options_connected"),
-            MiaoNetModule.Instance.MiaoNetContext.HasConnection
+            context.HasConnection
         ).Change(v =>
         {
-            var context = MiaoNetModule.Instance.MiaoNetContext;
-            if (v)
+            if (v && !context.HasConnection)
                 context.Connect();
-            else
+            if (!v && context.HasConnection)
                 context.Disconnect();
         });
-        menu.Add(item);
+        menu.Add(connectToggle);
+
+        context.ConnectionStateChanged += () =>
+            context.QueueOnMainThread(() =>
+                connectToggle.Index = context.HasConnection ? 1 : 0);
 
         #region Login State
 
@@ -46,16 +50,34 @@ public static class MenuMiaoNetOptions
         menu.Add(item);
 
 #if USE_CELEMIAO_AUTH
+        item = new EnumSlider<MiaoNetModuleSettings.ServerTarget>(
+            Dialog.Get("miaonet_options_server_target"),
+            t => Dialog.Get($"miaonet_options_server_target_{t}"), settings.Target
+        ).Change(v =>
+        {
+            settings.Target = v;
+            var (host, port) = settings.GetTargetEndpoint();
+            MiaoNetModule.Instance.MiaoNetContext.TargetServer = host;
+            MiaoNetModule.Instance.MiaoNetContext.TargetPort = port;
+            MiaoNetModule.Instance.MiaoNetContext.Disconnect();
+        });
+        menu.Add(item);
+
         item = new TextMenu.Button(Dialog.Get("miaonet_options_login"))
         {
             OnPressed = () =>
             {
-                ClientRC.Start();
+                (string clientId, int redirectPort) = settings.Target switch
+                {
+                    MiaoNetModuleSettings.ServerTarget.MiaoNetAlpha => ("bN8BOz8IjLk981LFLckBq3XzA6fsDC0d", 21472),
+                    _ => ("FSygRsIuDy0edjcJzYuw2PpJL1TwkWa", 38038),
+                };
+                ClientRC.Start(redirectPort);
 
                 string url = "https://bbs.celemiao.com/oauth/authorize?" +
-                    "client_id=FSygRsIuDy0edjcJzYuw2PpJL1TwkWa" +
+                    $"client_id={clientId}" +
                     "&response_type=code" +
-                    "&redirect_uri=http://localhost:38038/auth" +
+                    $"&redirect_uri=http://localhost:{redirectPort}/auth" +
                     "&scope=celeste.read";
                 SDL2.SDL.SDL_OpenURL(url);
             }

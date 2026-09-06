@@ -39,10 +39,10 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 #if DEBUG
     public string TargetServer { get; set; } = "127.0.0.1";
 #else
-    public string TargetServer { get; set; } = "s.voidsd.top";
+    public string TargetServer { get; set; } = MiaoNetModule.Settings.GetTargetEndpoint().Host;
 #endif
 
-    public int TargetPort { get; set; } = 21473;
+    public int TargetPort { get; set; } = MiaoNetModule.Settings.GetTargetEndpoint().Port;
 
     public bool HasComponentFocus
     {
@@ -124,6 +124,10 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
     public void QueueConnect()
         => mainThreadQueue.Enqueue(new Action(Connect));
 
+    /// <summary>Runs the action on the main thread (safe to call from connection callbacks).</summary>
+    public void QueueOnMainThread(Action action)
+        => mainThreadQueue.Enqueue(action);
+
     public void Connect()
     {
         if (activeConnectionOperation is not null)
@@ -158,6 +162,7 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
     public void OnConnected()
     {
         components.ForEach(c => c.OnConnected());
+        ConnectionStateChanged?.Invoke();
     }
 
     public void Disconnect()
@@ -247,6 +252,8 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
             Logger.Error(LT.MiaoNet, $"Failed to {failure.StepName}.");
             Logger.LogDetailed(failure.Exception, LT.MiaoNet);
         }
+
+        ConnectionStateChanged?.Invoke();
     }
 
     public void Update()

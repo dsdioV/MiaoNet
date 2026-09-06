@@ -46,6 +46,20 @@ public sealed class MiaoNetModuleSettings : EverestModuleSettings,
 
     #region Connection
 
+    public enum ServerTarget
+    {
+        Verdandi,
+        MiaoNetAlpha,
+    }
+
+    public ServerTarget Target { get; set; } = ServerTarget.Verdandi;
+
+    public (string Host, int Port) GetTargetEndpoint() => Target switch
+    {
+        ServerTarget.MiaoNetAlpha => ("main.server.celemiao.com", 21473),
+        _ => ("s.voidsd.top", 21473),
+    };
+
     public bool ConnectOnGameStart { get; set; }
 
     // This should be a temporary option

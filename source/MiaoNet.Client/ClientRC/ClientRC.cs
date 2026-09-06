@@ -12,16 +12,26 @@ public static class ClientRC
     }
 
     private static CancellationTokenSource? cts;
+    private static int currentPort;
 
-    public static void Start()
+    public static void Start(int port)
     {
+        // the OAuth redirect lands on this port; a running listener on the
+        // wrong port (left over from the other server profile) would drop the code.
+        if (cts is not null && !cts.IsCancellationRequested && currentPort != port)
+        {
+            Logger.Info(LT.MiaoNetRC, $"Client RC is running on port {currentPort}, restarting on {port}...");
+            Stop();
+        }
+
         if (cts is null || cts.IsCancellationRequested)
         {
-            Logger.Info(LT.MiaoNetRC, "Starting client RC...");
+            Logger.Info(LT.MiaoNetRC, $"Starting client RC on port {port}...");
             const int SecondsTimeout = 120;
             cts = new CancellationTokenSource(SecondsTimeout * 1000);
             Thread th = new(new ParameterizedThreadStart(RCThread));
-            th.Start(cts.Token);
+            th.Start((cts.Token, port));
+            currentPort = port;
         }
         else
         {
@@ -43,16 +53,16 @@ public static class ClientRC
         }
     }
 
-    private static void RCThread(object? tokenObj)
+    private static void RCThread(object? state)
     {
-        CancellationToken token = (CancellationToken)tokenObj!;
+        (CancellationToken token, int port) = ((CancellationToken, int))state!;
 
         Logger.Info(LT.MiaoNetRC, "Client RC is running.");
 
         try
         {
             HttpListener listener = new();
-            listener.Prefixes.Add("http://localhost:38038/");
+            listener.Prefixes.Add($"http://localhost:{port}/");
             token.Register(state =>
             {
                 var l = (HttpListener)state!;

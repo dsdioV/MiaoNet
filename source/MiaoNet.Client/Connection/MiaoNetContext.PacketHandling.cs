@@ -8,6 +8,7 @@ partial class MiaoNetContext
     public delegate void PacketPlayerNotificationHandler<TPacket>(OnlinePlayer player, TPacket packet);
 
     public event Action<ClientState>? ClientInitialized;
+    public event Action? ConnectionStateChanged;
     public event Action<OnlinePlayer>? PlayerJoined;
     public event Action<OnlinePlayer>? PlayerLeft;
     public event PacketPlayerNotificationHandler<PacketPlayerFrame>? PlayerFrameNotification;

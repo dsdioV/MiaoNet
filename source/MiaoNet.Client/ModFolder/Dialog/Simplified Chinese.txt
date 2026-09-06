@@ -281,3 +281,7 @@ miaonet_oui_conflict_continue_description= 警告：这可能发生非预期的�
 
 miaonet_interactions_off_on_collecting_golden= 玩家交互已因捡起金草莓而关闭。
 miaonet_group_photo_mode_off_on_map_change= 合影模式已因位置变化而关闭。
+
+miaonet_options_server_target= 服务器目标
+miaonet_options_server_target_Verdandi= Verðandi (私服)
+miaonet_options_server_target_MiaoNetAlpha= MiaoNet alpha (官方)
