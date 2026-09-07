@@ -39,7 +39,7 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 #if DEBUG
     public string TargetServer { get; set; } = "127.0.0.1";
 #else
-    public string TargetServer { get; set; } = "s.saplonily.top";
+    public string TargetServer { get; set; } = "s.voidsd.top";
 #endif
 
     public int TargetPort { get; set; } = 21473;

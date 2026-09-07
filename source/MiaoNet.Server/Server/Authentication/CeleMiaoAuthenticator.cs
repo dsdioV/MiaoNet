@@ -81,7 +81,7 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
                     client_secret = clientSecret,
                     grant_type = "authorization_code",
                     code = authCode,
-                    redirect_uri = "http://localhost:21472/auth"
+                    redirect_uri = "http://localhost:38038/auth"
                 };
                 var res = await httpClient.PostAsJsonAsync(EndPointCodeAuth, content, token);
                 res.EnsureSuccessStatusCode();
@@ -143,7 +143,7 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
                         client_secret = clientSecret,
                         grant_type = "refresh_token",
                         refresh_token = tokenObject.RefreshToken,
-                        redirect_uri = "http://localhost:21472/auth"
+                        redirect_uri = "http://localhost:38038/auth"
                     };
                     var res = await httpClient.PostAsJsonAsync(EndPointCodeAuth, content, token);
                     res.EnsureSuccessStatusCode();

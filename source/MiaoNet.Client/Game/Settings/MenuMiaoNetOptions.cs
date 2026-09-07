@@ -53,9 +53,9 @@ public static class MenuMiaoNetOptions
                 ClientRC.Start();
 
                 string url = "https://bbs.celemiao.com/oauth/authorize?" +
-                    "client_id=bN8BOz8IjLk981LFLckBq3XzA6fsDC0d" +
+                    "client_id=FSygRsIuDy0edjcJzYuw2PpJL1TwkWa" +
                     "&response_type=code" +
-                    "&redirect_uri=http://localhost:21472/auth" +
+                    "&redirect_uri=http://localhost:38038/auth" +
                     "&scope=celeste.read";
                 SDL2.SDL.SDL_OpenURL(url);
             }
