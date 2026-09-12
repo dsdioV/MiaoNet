@@ -54,6 +54,9 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
         logger.LogInformation(AppEvents.Auth, "Using User-Agent \"{ua}\".", ua);
         httpClient.BaseAddress = new Uri(BaseAddress);
         httpClient.DefaultRequestHeaders.Add("User-Agent", ua);
+        // 每次都开新连接: 池里闲置的 keep-alive 连接可能已被 CDN 静默掐掉, 复用它会让请求卡住。
+        // 鉴权一次登录只跑一两次, 多一次 TLS 握手(约 200ms)完全划算。
+        httpClient.DefaultRequestHeaders.ConnectionClose = true;
 
         static Aes GetAes(byte[] password, byte[] salt)
         {
@@ -65,6 +68,41 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
             return aes;
         }
     }
+
+    private static readonly TimeSpan AuthAttemptTimeout = TimeSpan.FromSeconds(8);
+    private const int AuthAttempts = 3;
+
+    // 实测到 BBS 的这次 POST 是双峰: 要么 ~1s 返回, 要么连接直接卡死(等多久都不回)——
+    // 卡死的那次只能靠超时放弃, 再开一条新连接重试(CDN 会轮到别的边缘 IP)。
+    // 没有这层重试时, 一次卡死就等于这次登录失败(表现: 服务端 Handshake timeouted,
+    // 客户端 end of stream)。注意 HandshakeTimeout 必须 >= AuthAttempts * AuthAttemptTimeout + 余量。
+    private async Task<HttpResponseMessage> PostAuthAsync(object content, CancellationToken token)
+    {
+        Exception? last = null;
+        for (int attempt = 1; attempt <= AuthAttempts; attempt++)
+        {
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            attemptCts.CancelAfter(AuthAttemptTimeout);
+            try
+            {
+                return await httpClient.PostAsJsonAsync(EndPointCodeAuth, content, attemptCts.Token);
+            }
+            catch (Exception e) when (!token.IsCancellationRequested && IsTransient(e))
+            {
+                last = e;
+                logger.LogWarning(
+                    AppEvents.Auth,
+                    "Auth request attempt {attempt}/{total} failed ({type}: {msg}), retrying.",
+                    attempt, AuthAttempts, e.GetType().Name, e.Message
+                );
+            }
+        }
+
+        throw last!;
+    }
+
+    private static bool IsTransient(Exception e)
+        => e is TaskCanceledException or HttpRequestException or IOException;
 
     public async Task<AuthenticationResult> AuthenticateAsync(byte[] data, bool isAuthorize, CancellationToken token)
     {
@@ -82,7 +120,7 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
                     code = authCode,
                     redirect_uri = "http://localhost:21472/auth"
                 };
-                var res = await httpClient.PostAsJsonAsync(EndPointCodeAuth, content, token);
+                var res = await PostAuthAsync(content, token);
                 res.EnsureSuccessStatusCode();
                 DateTime resTime = (res.Headers.Date ?? DateTimeOffset.UtcNow).DateTime;
                 var json = await res.Content.ReadAsStringAsync(token);
@@ -144,7 +182,7 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
                         refresh_token = tokenObject.RefreshToken,
                         redirect_uri = "http://localhost:21472/auth"
                     };
-                    var res = await httpClient.PostAsJsonAsync(EndPointCodeAuth, content, token);
+                    var res = await PostAuthAsync(content, token);
                     res.EnsureSuccessStatusCode();
                     DateTime resTime = (res.Headers.Date ?? DateTimeOffset.UtcNow).DateTime;
                     var json = await res.Content.ReadAsStringAsync(token);
