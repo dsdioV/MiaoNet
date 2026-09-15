@@ -1,4 +1,4 @@
-﻿using System.Collections.Specialized;
+using System.Collections.Specialized;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -16,6 +16,7 @@ public sealed partial class MiaoHttpService : BackgroundService
     private readonly ILogger<MiaoHttpService> logger;
     private readonly IMiaoServerService miaoServerService;
     private readonly MiaoMetricsService miaoMetricsService;
+    private readonly TemporaryFreezeStore temporaryFreezeStore;
     private readonly HttpListener httpListener;
     private readonly Dictionary<string, RequestHandler> requestHandlers;
 
@@ -25,12 +26,14 @@ public sealed partial class MiaoHttpService : BackgroundService
         ILogger<MiaoHttpService> logger,
         IOptions<HttpOptions> options,
         IMiaoServerService miaoServerService,
-        MiaoMetricsService miaoMetricsService
+        MiaoMetricsService miaoMetricsService,
+        TemporaryFreezeStore temporaryFreezeStore
     )
     {
         this.logger = logger;
         this.miaoServerService = miaoServerService;
         this.miaoMetricsService = miaoMetricsService;
+        this.temporaryFreezeStore = temporaryFreezeStore;
         httpListener = new();
         httpListener.Prefixes.Add(options.Value.ListenerPrefix);
 
@@ -47,6 +50,7 @@ public sealed partial class MiaoHttpService : BackgroundService
             ["/admin"] = Admin,
             ["/status"] = Status,
             ["/player"] = Player,
+            ["/freeze"] = Freeze,
             ["/announce"] = Announce,
             ["/gc"] = DoGC,
             ["/metrics"] = GetMetrics

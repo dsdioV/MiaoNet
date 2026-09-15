@@ -66,6 +66,7 @@ button.kick{background:none;border:1px solid rgba(255,56,96,.5);color:#ff6b81;pa
 button.kick:hover{background:rgba(255,56,96,.15);color:#ff3860;}
 .bar{display:flex;gap:10px;margin-bottom:12px;}
 .bar input{flex:1;max-width:480px;}
+.hint{color:#5f7a85;font-size:12px;align-self:center;letter-spacing:1px;}
 
 /* ---------- toasts ---------- */
 #toasts{position:fixed;top:64px;right:24px;z-index:100;display:flex;flex-direction:column;gap:8px;}
@@ -93,6 +94,7 @@ button.kick:hover{background:rgba(255,56,96,.15);color:#ff3860;}
   <div class="cards">
     <div class="card"><div class="label">在线玩家</div><div class="value" id="d-players">-</div></div>
     <div class="card"><div class="label">频道数</div><div class="value" id="d-channels">-</div></div>
+    <div class="card"><div class="label">冻结中</div><div class="value" id="d-frozen">-</div></div>
   </div>
 
   <section class="panel">
@@ -105,10 +107,24 @@ button.kick:hover{background:rgba(255,56,96,.15);color:#ff3860;}
 
   <section class="panel">
     <h2 class="sec-title">在线玩家</h2>
+    <div class="bar">
+      <input id="freeze-minutes" type="number" min="0" max="10080" value="0" style="flex:0 0 130px;max-width:130px;">
+      <span class="hint" id="freeze-hint">冻结时长（分钟），0 = 只踢不冻</span>
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>连接 ID</th><th>名称</th><th>频道</th><th>位置</th><th>操作</th></tr></thead>
         <tbody id="players-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 class="sec-title">临时冻结</h2>
+    <div class="table-wrap" style="max-height:220px;">
+      <table>
+        <thead><tr><th>账号 ID</th><th>名称</th><th>剩余</th><th>原因</th><th>操作</th></tr></thead>
+        <tbody id="frozen-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -160,6 +176,8 @@ async function refresh() {
   $("#live-text").textContent = "实时";
   $("#d-players").textContent = data.PlayersCount;
   $("#d-channels").textContent = data.Channels.length;
+  $("#d-frozen").textContent = (data.Frozen ?? []).length;
+  renderFrozen(data.Frozen ?? []);
 
   const pb = $("#players-body");
   pb.innerHTML = "";
@@ -172,11 +190,12 @@ async function refresh() {
     for (const p of players) {
       const tr = document.createElement("tr");
       const loc = (p.Location ?? "").trim() || "-";
-      tr.innerHTML = "<td>" + p.ID + "</td><td>" + esc(p.Name) + "</td><td>" + esc(p.channel) +
+      const frozenTag = p.Frozen ? ' <span style="color:#ffb04d;font-size:11px;">[已冻结]</span>' : "";
+      tr.innerHTML = "<td>" + p.ID + "</td><td>" + esc(p.Name) + frozenTag + "</td><td>" + esc(p.channel) +
         "</td><td>" + esc(loc) + "</td>";
       const td = document.createElement("td");
       const btn = document.createElement("button");
-      btn.className = "kick"; btn.textContent = "踢出";
+      btn.className = "kick"; btn.textContent = freezeMinutes() > 0 ? "踢出并冻结" : "踢出";
       btn.addEventListener("click", () => kick(p));
       td.appendChild(btn); tr.appendChild(td);
       pb.appendChild(tr);
@@ -196,17 +215,56 @@ async function refresh() {
   }
 }
 
-// ---- 踢人 ----
+// ---- 踢人 / 踢人并冻结 ----
+function freezeMinutes() {
+  const v = parseInt($("#freeze-minutes").value, 10);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 10080) : 0;
+}
 async function kick(p) {
-  const reason = prompt("踢出 " + p.Name + "（连接 " + p.ID + "）的原因（可留空）：", "");
+  const mins = freezeMinutes();
+  const action = mins > 0 ? ("踢出并冻结 " + mins + " 分钟") : "踢出";
+  const reason = prompt("对 " + p.Name + "（连接 " + p.ID + "）执行「" + action + "」的原因（可留空）：", "");
   if (reason === null) return;
-  if (!confirm("确定要踢出 " + p.Name + " 吗？")) return;
+  if (!confirm("确定要" + action + " " + p.Name + " 吗？" + (mins > 0 ? "\n该账号在接下来 " + mins + " 分钟内将无法连接。" : ""))) return;
   try {
-    const url = "/player?cid=" + encodeURIComponent(p.ID) + "&reason=" + encodeURIComponent(reason);
+    let url = "/player?cid=" + encodeURIComponent(p.ID) + "&reason=" + encodeURIComponent(reason);
+    if (mins > 0) url += "&minutes=" + mins;
     const r = await fetch(url, { method: "DELETE" });
-    if (r.status === 204) { toast("已踢出 " + p.Name, true); refresh(); }
+    if (r.status === 204) { toast("已" + action + " " + p.Name, true); refresh(); }
     else if (r.status === 404) toast("玩家 " + p.Name + " 已不在线", false);
-    else toast("踢出失败 (HTTP " + r.status + ")", false);
+    else toast(action + "失败 (HTTP " + r.status + ")", false);
+  } catch (e) { toast("请求失败", false); }
+}
+
+// ---- 临时冻结列表 ----
+function renderFrozen(list) {
+  const fb = $("#frozen-body");
+  fb.innerHTML = "";
+  if (list.length === 0) {
+    fb.innerHTML = '<tr><td colspan="5" class="empty">当前没有冻结中的账号</td></tr>';
+    return;
+  }
+  for (const f of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td>" + f.AuthID + "</td><td>" + esc(f.Name ?? "-") + "</td><td>" +
+      f.RemainingMinutes + " 分</td><td>" + esc(f.Reason ?? "-") + "</td>";
+    const td = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "act";
+    btn.style.padding = "4px 10px"; btn.style.fontSize = "12px";
+    btn.textContent = "解冻";
+    btn.addEventListener("click", () => unfreeze(f));
+    td.appendChild(btn); tr.appendChild(td);
+    fb.appendChild(tr);
+  }
+}
+async function unfreeze(f) {
+  const label = f.Name ?? ("账号 " + f.AuthID);
+  if (!confirm("解除 " + label + " 的冻结？")) return;
+  try {
+    const r = await fetch("/freeze?aid=" + encodeURIComponent(f.AuthID), { method: "DELETE" });
+    if (r.status === 204) { toast("已解冻 " + label, true); refresh(); }
+    else toast("解冻失败 (HTTP " + r.status + ")", false);
   } catch (e) { toast("请求失败", false); }
 }
 
@@ -223,6 +281,16 @@ async function sendAnnounce() {
 }
 $("#announce-send").addEventListener("click", sendAnnounce);
 $("#announce-input").addEventListener("keydown", e => { if (e.key === "Enter") sendAnnounce(); });
+
+// ---- 冻结时长输入 ----
+function updateFreezeHint() {
+  const mins = freezeMinutes();
+  $("#freeze-hint").textContent = mins > 0
+    ? "冻结时长（分钟），点「踢出」将同时冻结该账号 " + mins + " 分钟"
+    : "冻结时长（分钟），0 = 只踢不冻";
+}
+$("#freeze-minutes").addEventListener("input", updateFreezeHint);
+updateFreezeHint();
 
 refresh();
 setInterval(refresh, 3000);

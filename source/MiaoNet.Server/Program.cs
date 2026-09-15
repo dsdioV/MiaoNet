@@ -76,10 +76,20 @@ public static partial class Program
         // hm...?
         builder.Services.AddHostedService(s => (MiaoCertificateService)s.GetRequiredService<IMiaoCertificateService>());
 #endif
+        // 临时冻结（本地管理层）: 名单 + 装饰真实鉴权器, 握手阶段拒绝被冻结的账号
+        builder.Services.AddSingleton<TemporaryFreezeStore>();
 #if USE_CELEMIAO_AUTH
-        builder.Services.AddSingleton<IMiaoAuthenticator, CeleMiaoAuthenticator>();
+        builder.Services.AddSingleton<CeleMiaoAuthenticator>();
+        builder.Services.AddSingleton<IMiaoAuthenticator>(p => new FreezingAuthenticator(
+            p.GetRequiredService<CeleMiaoAuthenticator>(),
+            p.GetRequiredService<TemporaryFreezeStore>()
+        ));
 #else
-        builder.Services.AddSingleton<IMiaoAuthenticator, CustomAuthenticator>();
+        builder.Services.AddSingleton<CustomAuthenticator>();
+        builder.Services.AddSingleton<IMiaoAuthenticator>(p => new FreezingAuthenticator(
+            p.GetRequiredService<CustomAuthenticator>(),
+            p.GetRequiredService<TemporaryFreezeStore>()
+        ));
 #endif
         builder.Services.Configure<MiaoServerOptions>(builder.Configuration.GetRequiredSection("MiaoServer:Network"));
         builder.Services.Configure<HttpOptions>(builder.Configuration.GetRequiredSection("MiaoServer:Http"));
