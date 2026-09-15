@@ -335,6 +335,8 @@ public sealed partial class MiaoServerService
             _ => ChatMessageType.Chat
         };
         var toSend = new PacketChatMessage(DateTime.UtcNow, type, connection.Player.ID, packet.Content);
+        // 本地管理面板的聊天窗（只在 deploy 分支上，见 AdminChatBuffer）
+        AdminChatBuffer.Instance.Record(type, connection.Player.Info.Name, packet.Content);
         switch (type)
         {
         case ChatMessageType.Chat:
@@ -491,6 +493,12 @@ public sealed partial class MiaoServerService
 
             await target.QueuePacketAsync(
                 new PacketChatMessage(DateTime.UtcNow, ChatMessageType.PrivateMessage, connection.ID, request.Content)
+            );
+            AdminChatBuffer.Instance.Record(
+                ChatMessageType.PrivateMessage,
+                connection.Player.Info.Name,
+                request.Content,
+                target.Player.Info.Name
             );
             await connection.ResponseAsync(envelope, new PacketSendPrivateChatMessageResponse(DateTime.UtcNow, PacketSendPrivateChatMessageResponse.SendResult.Success));
         }

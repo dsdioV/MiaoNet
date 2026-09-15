@@ -244,6 +244,13 @@ public sealed partial class MiaoServerService : BackgroundService, IMiaoServerSe
                 // TODO should we wait for all clients to response?
                 await Task.WhenAll(taskList);
 
+                // 记下每个玩家最近一次心跳 RTT(本地管理面板用); -1 = 超时
+                foreach (var (rttTask, connection) in list)
+                {
+                    TimeSpan? rtt = rttTask.Result;
+                    connection.Player.LastPing = rtt is null ? -1 : (int)rtt.Value.TotalMilliseconds;
+                }
+
                 // Latency is channel-scoped: each channel only receives the pings
                 // of its own players, so cross-channel latency stays invisible.
                 foreach (var group in list.GroupBy(t => t.Item2.Player.Channel))

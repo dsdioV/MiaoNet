@@ -69,6 +69,11 @@ public static partial class Program
         builder.Services.AddSingleton<IMiaoServerService, MiaoServerService>(p => p.GetRequiredService<MiaoServerService>());
         builder.Services.AddHostedService(s => s.GetRequiredService<MiaoServerService>());
         builder.Services.AddSingleton<MiaoMetricsService>();
+        // 本地管理面板的采集器与缓冲（deploy 层；面板只读，不参与游戏逻辑）
+        builder.Services.AddSingleton<AdminLogBuffer>();
+        builder.Services.AddSingleton<ILoggerProvider, AdminLogBufferLoggerProvider>();
+        builder.Services.AddSingleton<AdminMetricsSampler>();
+        builder.Services.AddHostedService(p => p.GetRequiredService<AdminMetricsSampler>());
 #if USE_LOCALHOST_PFX
         builder.Services.AddSingleton<IMiaoCertificateService, LocalMiaoCertificateService>();
 #else

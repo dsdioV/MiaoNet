@@ -234,6 +234,7 @@ public partial class MiaoHttpService
                     ID = c.ID,
                     Name = c.Player.Info.Name,
                     Location = c.Player.Location.ToString(),
+                    Latency = c.Player.LastPing,
                     Frozen = temporaryFreezeStore.GetFrozen(c.Player.Info.AuthID) is not null
                 })
             })
@@ -254,6 +255,7 @@ public partial class MiaoHttpService
         }
 
         await miaoServerService.BroadcastAsync(new PacketChatMessage(DateTime.UtcNow, ChatMessageType.Server, null, message));
+        AdminChatBuffer.Instance.Record(ChatMessageType.Server, null, message);
 
         context.Response.StatusCode = (int)HttpStatusCode.NoContent;
     }
@@ -285,4 +287,56 @@ public partial class MiaoHttpService
         await JsonSerializer.SerializeAsync(context.Response.OutputStream, ret, jsonSerializerOptions);
         context.Response.StatusCode = (int)HttpStatusCode.OK;
     }
+
+    private async Task GetMetricsHistory(NameValueCollection query, HttpListenerContext context)
+    {
+        context.Response.ContentType = MediaTypeNames.Application.Json;
+
+        var ret = new
+        {
+            IntervalSeconds = AdminMetricsSampler.SampleInterval.TotalSeconds,
+            Capacity = AdminMetricsSampler.Capacity,
+            Samples = metricsSampler.Snapshot()
+        };
+
+        await JsonSerializer.SerializeAsync(context.Response.OutputStream, ret, jsonSerializerOptions);
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+    }
+
+    /// <summary>面板用：拉取 seq &gt; since 的日志条目（增量）。</summary>
+    private async Task GetLogs(NameValueCollection query, HttpListenerContext context)
+    {
+        context.Response.ContentType = MediaTypeNames.Application.Json;
+
+        long since = ParseLong(query["since"], 0);
+        int max = (int)Math.Clamp(ParseLong(query["max"], 200), 1, 1000);
+        var (latestSeq, items) = adminLogBuffer.Since(since, max);
+
+        await JsonSerializer.SerializeAsync(
+            context.Response.OutputStream,
+            new { LatestSeq = latestSeq, Items = items },
+            jsonSerializerOptions
+        );
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+    }
+
+    /// <summary>面板用：拉取 seq &gt; since 的聊天/公告（增量）。</summary>
+    private async Task GetChat(NameValueCollection query, HttpListenerContext context)
+    {
+        context.Response.ContentType = MediaTypeNames.Application.Json;
+
+        long since = ParseLong(query["since"], 0);
+        int max = (int)Math.Clamp(ParseLong(query["max"], 200), 1, 1000);
+        var (latestSeq, items) = AdminChatBuffer.Instance.Since(since, max);
+
+        await JsonSerializer.SerializeAsync(
+            context.Response.OutputStream,
+            new { LatestSeq = latestSeq, Items = items },
+            jsonSerializerOptions
+        );
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+    }
+
+    private static long ParseLong(string? raw, long fallback)
+        => long.TryParse(raw, CultureInfo.InvariantCulture, out long value) ? value : fallback;
 }

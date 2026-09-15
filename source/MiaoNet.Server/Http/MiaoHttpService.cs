@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Web;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,8 @@ public sealed partial class MiaoHttpService : BackgroundService
     private readonly IMiaoServerService miaoServerService;
     private readonly MiaoMetricsService miaoMetricsService;
     private readonly TemporaryFreezeStore temporaryFreezeStore;
+    private readonly AdminMetricsSampler metricsSampler;
+    private readonly AdminLogBuffer adminLogBuffer;
     private readonly HttpListener httpListener;
     private readonly Dictionary<string, RequestHandler> requestHandlers;
 
@@ -27,18 +30,24 @@ public sealed partial class MiaoHttpService : BackgroundService
         IOptions<HttpOptions> options,
         IMiaoServerService miaoServerService,
         MiaoMetricsService miaoMetricsService,
-        TemporaryFreezeStore temporaryFreezeStore
+        TemporaryFreezeStore temporaryFreezeStore,
+        AdminMetricsSampler metricsSampler,
+        AdminLogBuffer adminLogBuffer
     )
     {
         this.logger = logger;
         this.miaoServerService = miaoServerService;
         this.miaoMetricsService = miaoMetricsService;
         this.temporaryFreezeStore = temporaryFreezeStore;
+        this.metricsSampler = metricsSampler;
+        this.adminLogBuffer = adminLogBuffer;
         httpListener = new();
         httpListener.Prefixes.Add(options.Value.ListenerPrefix);
 
         jsonSerializerOptions = new()
         {
+            // 面板直接读枚举名(日志级别/聊天类型)比数字友好
+            Converters = { new JsonStringEnumConverter() },
 #if DEBUG
             WriteIndented = true
 #endif
@@ -53,7 +62,10 @@ public sealed partial class MiaoHttpService : BackgroundService
             ["/freeze"] = Freeze,
             ["/announce"] = Announce,
             ["/gc"] = DoGC,
-            ["/metrics"] = GetMetrics
+            ["/metrics"] = GetMetrics,
+            ["/metrics/history"] = GetMetricsHistory,
+            ["/logs"] = GetLogs,
+            ["/chat"] = GetChat
         };
     }
 

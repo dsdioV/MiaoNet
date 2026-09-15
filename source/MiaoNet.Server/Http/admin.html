@@ -3,139 +3,191 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>管理后台 - MiaoNet</title>
+<title>MiaoNet 管理面板</title>
 <style>
+:root{
+  --bg:#fff; --fg:#1f2328; --muted:#6b7280; --line:#e5e7eb; --soft:#f7f8fa;
+  --accent:#2563eb; --ok:#15803d; --warn:#b45309; --err:#b91c1c;
+  --mono:ui-monospace,Consolas,"Courier New",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16181c; --fg:#e3e5e8; --muted:#9aa1a9; --line:#2b2f36; --soft:#1d2025;
+    --accent:#8ab4f8; --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
+  }
+}
 *{box-sizing:border-box;}
-html{color-scheme:dark;}
-body{background:#0a0e14;color:#c8d3d8;margin:0;font-family:"Segoe UI","Microsoft YaHei",sans-serif;}
-a{color:#00e5ff;text-decoration:none;}
-.mono{font-family:Consolas,"Courier New",monospace;}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+h2{font-size:13px;font-weight:600;margin:0 0 8px;color:var(--fg);}
+a{color:var(--accent);}
+.mono,td.num,.num{font-family:var(--mono);font-variant-numeric:tabular-nums;}
 
-/* ---------- header ---------- */
-header{display:flex;align-items:center;gap:16px;padding:0 24px;height:52px;background:rgba(10,14,20,.92);
-  border-bottom:1px solid rgba(0,229,255,.25);position:sticky;top:0;z-index:50;}
-.brand{font-size:15px;font-weight:600;letter-spacing:3px;color:#00e5ff;
-  font-family:Consolas,"Courier New",monospace;text-shadow:0 0 8px rgba(0,229,255,.5);}
-.brand-sub{color:#5f7a85;letter-spacing:2px;margin-left:8px;font-size:12px;text-shadow:none;}
-.live{display:flex;align-items:center;gap:6px;font-size:12px;color:#00ff9c;letter-spacing:2px;}
-.live .dot{width:8px;height:8px;background:#00ff9c;border-radius:50%;box-shadow:0 0 6px rgba(0,255,156,.7);}
-.live.down{color:#ff3860;}
-.live.down .dot{background:#ff3860;box-shadow:0 0 6px rgba(255,56,96,.7);}
+header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;
+  padding:8px 16px;background:var(--bg);border-bottom:1px solid var(--line);}
+header .title{font-weight:600;}
+header .muted{color:var(--muted);font-size:12px;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;}
+.dot.down{background:var(--err);}
 .spacer{flex:1;}
-.user{font-size:12px;color:#5f7a85;font-family:Consolas,"Courier New",monospace;}
 
-/* ---------- layout ---------- */
-main{padding:18px 24px 60px;max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:16px;}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
+main{padding:14px 16px 40px;max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:14px;}
+section{border:1px solid var(--line);border-radius:6px;padding:12px;background:var(--bg);}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}
+.stat{border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--soft);}
+.stat .k{color:var(--muted);font-size:11px;}
+.stat .v{font-size:19px;font-family:var(--mono);font-variant-numeric:tabular-nums;}
 
-/* ---------- panels ---------- */
-.panel{background:rgba(13,17,23,.9);border:1px solid rgba(0,229,255,.18);padding:14px 16px;position:relative;}
-.panel::before,.panel::after{content:"";position:absolute;width:10px;height:10px;pointer-events:none;}
-.panel::before{top:-1px;left:-1px;border-top:1px solid rgba(0,229,255,.7);border-left:1px solid rgba(0,229,255,.7);}
-.panel::after{bottom:-1px;right:-1px;border-bottom:1px solid rgba(0,229,255,.7);border-right:1px solid rgba(0,229,255,.7);}
-.sec-title{font-size:12px;margin:0 0 12px;color:#9fdcec;letter-spacing:4px;text-transform:uppercase;font-weight:600;
-  display:flex;align-items:center;gap:8px;}
-.sec-title::before{content:"";width:8px;height:8px;background:#00e5ff;box-shadow:0 0 8px rgba(0,229,255,.8);flex:none;}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:820px){.charts{grid-template-columns:1fr;}}
+.chart svg{display:block;width:100%;height:84px;}
+.chart .cap{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-top:2px;}
 
-/* ---------- stat cards ---------- */
-.card{background:rgba(13,17,23,.9);border:1px solid rgba(0,229,255,.18);padding:12px 14px;position:relative;}
-.card .label{font-size:11px;color:#5f7a85;margin-bottom:6px;letter-spacing:2px;}
-.card .value{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#00e5ff;
-  font-family:Consolas,"Courier New",monospace;text-shadow:0 0 10px rgba(0,229,255,.4);}
+table{border-collapse:collapse;width:100%;}
+th,td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--line);font-size:12px;}
+th{color:var(--muted);font-weight:500;user-select:none;white-space:nowrap;}
+th.sortable{cursor:pointer;}
+th.sortable:hover{color:var(--fg);}
+td.num,th.num{text-align:right;}
+tbody tr:hover{background:var(--soft);}
+.empty{color:var(--muted);padding:12px;text-align:center;}
+.scroll{max-height:260px;overflow:auto;}
+.tag{display:inline-block;padding:0 5px;border:1px solid var(--line);border-radius:4px;font-size:11px;color:var(--muted);}
+.ok{color:var(--ok);} .warn{color:var(--warn);} .err{color:var(--err);} .muted{color:var(--muted);}
 
-/* ---------- table ---------- */
-.table-wrap{max-height:360px;overflow-y:auto;border:1px solid rgba(0,229,255,.1);}
-table{border-collapse:collapse;width:100%;font-family:Consolas,"Courier New",monospace;}
-th,td{border-bottom:1px solid rgba(0,229,255,.08);padding:7px 10px;text-align:left;font-size:12px;}
-th{color:#4f99a8;font-weight:500;background:rgba(0,229,255,.05);letter-spacing:1px;position:sticky;top:0;}
-tbody tr:hover{background:rgba(0,229,255,.05);}
-.empty{color:#3d5560;padding:18px;text-align:center;}
+input,select,button{font:inherit;color:var(--fg);background:var(--bg);
+  border:1px solid var(--line);border-radius:4px;padding:5px 8px;}
+input:focus,select:focus{outline:1px solid var(--accent);border-color:var(--accent);}
+button{cursor:pointer;}
+button:hover{background:var(--soft);}
+button.danger{color:var(--err);}
+button.primary{color:var(--accent);}
+button.small{padding:2px 7px;font-size:11px;}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}
 
-/* ---------- inputs & buttons ---------- */
-input{background:#0a0e14;border:1px solid rgba(0,229,255,.25);color:#c8d3d8;padding:8px 10px;font-size:13px;
-  font-family:Consolas,"Courier New",monospace;}
-input:focus{outline:none;border-color:#00e5ff;box-shadow:0 0 0 1px rgba(0,229,255,.35),0 0 12px rgba(0,229,255,.15);}
-input::placeholder{color:#3d5560;}
-button{font-family:inherit;letter-spacing:1px;}
-button.act{background:rgba(0,229,255,.1);color:#00e5ff;border:1px solid rgba(0,229,255,.5);padding:8px 16px;
-  cursor:pointer;font-size:13px;}
-button.act:hover{background:rgba(0,229,255,.2);box-shadow:0 0 12px rgba(0,229,255,.3);}
-button.act:active{transform:translateY(1px);}
-button.kick{background:none;border:1px solid rgba(255,56,96,.5);color:#ff6b81;padding:4px 10px;cursor:pointer;
-  font-size:12px;font-family:Consolas,"Courier New",monospace;}
-button.kick:hover{background:rgba(255,56,96,.15);color:#ff3860;}
-.bar{display:flex;gap:10px;margin-bottom:12px;}
-.bar input{flex:1;max-width:480px;}
-.hint{color:#5f7a85;font-size:12px;align-self:center;letter-spacing:1px;}
-
-/* ---------- toasts ---------- */
-#toasts{position:fixed;top:64px;right:24px;z-index:100;display:flex;flex-direction:column;gap:8px;}
-.toast{padding:10px 16px;font-size:12px;background:rgba(10,14,20,.95);max-width:380px;
-  font-family:Consolas,"Courier New",monospace;letter-spacing:1px;}
-.toast.ok{border:1px solid rgba(0,255,156,.6);color:#00ff9c;box-shadow:0 0 14px rgba(0,255,156,.15);}
-.toast.err{border:1px solid rgba(255,56,96,.6);color:#ff6b81;box-shadow:0 0 14px rgba(255,56,96,.15);}
-.toast.out{opacity:0;transition:opacity .25s;}
-
-/* ---------- scrollbars ---------- */
-::-webkit-scrollbar{width:8px;height:8px;}
-::-webkit-scrollbar-track{background:#070a0f;}
-::-webkit-scrollbar-thumb{background:rgba(0,229,255,.2);border:1px solid rgba(0,229,255,.1);}
+.rows{font-family:var(--mono);font-size:12px;}
+.row{display:flex;gap:8px;padding:2px 0;border-bottom:1px solid var(--line);}
+.row:last-child{border-bottom:none;}
+.row .t{color:var(--muted);flex:0 0 62px;}
+.row .lv{flex:0 0 58px;}
+.row .cat{flex:0 0 96px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.row .msg{flex:1;white-space:pre-wrap;word-break:break-word;}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:980px){.two{grid-template-columns:1fr;}}
+#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:6px;z-index:20;}
+.toast{padding:7px 12px;border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:4px;background:var(--soft);font-size:12px;max-width:360px;}
+.toast.err{border-left-color:var(--err);}
+.toast.ok{border-left-color:var(--ok);}
 </style>
 </head>
 <body>
 
 <header>
-  <div class="brand">MIAONET<span class="brand-sub">管理后台</span></div>
-  <div class="live" id="live"><span class="dot"></span><span id="live-text">实时</span></div>
-  <div class="spacer"></div>
+  <span class="title">MiaoNet 管理面板</span>
+  <span class="dot" id="live-dot"></span>
+  <span class="muted" id="live-text">连接中…</span>
+  <span class="spacer"></span>
+  <span class="muted" id="stamp"></span>
+  <select id="interval" title="刷新间隔">
+    <option value="2">2 秒</option>
+    <option value="3" selected>3 秒</option>
+    <option value="10">10 秒</option>
+  </select>
 </header>
 
 <main>
-  <div class="cards">
-    <div class="card"><div class="label">在线玩家</div><div class="value" id="d-players">-</div></div>
-    <div class="card"><div class="label">频道数</div><div class="value" id="d-channels">-</div></div>
-    <div class="card"><div class="label">冻结中</div><div class="value" id="d-frozen">-</div></div>
+  <section>
+    <div class="grid">
+      <div class="stat"><div class="k">在线玩家</div><div class="v" id="s-players">-</div></div>
+      <div class="stat"><div class="k">冻结中</div><div class="v" id="s-frozen">-</div></div>
+      <div class="stat"><div class="k">CPU（全核）</div><div class="v" id="s-cpu">-</div></div>
+      <div class="stat"><div class="k">GC 分配</div><div class="v" id="s-alloc">-</div></div>
+      <div class="stat"><div class="k">上行</div><div class="v" id="s-up">-</div></div>
+      <div class="stat"><div class="k">包率</div><div class="v" id="s-pkts">-</div></div>
+    </div>
+  </section>
+
+  <div class="charts">
+    <section class="chart">
+      <h2>CPU 占用 <span class="muted">(% 全核均值 / 近 1 小时)</span></h2>
+      <div id="chart-cpu"></div>
+      <div class="cap"><span>1 小时前</span><span id="cap-cpu"></span><span>现在</span></div>
+    </section>
+    <section class="chart">
+      <h2>GC 分配速率 <span class="muted">(MB/s / 近 1 小时)</span></h2>
+      <div id="chart-alloc"></div>
+      <div class="cap"><span>1 小时前</span><span id="cap-alloc"></span><span>现在</span></div>
+    </section>
   </div>
 
-  <section class="panel">
-    <h2 class="sec-title">广播公告</h2>
+  <section>
+    <h2>在线玩家</h2>
     <div class="bar">
-      <input id="announce-input" placeholder="&gt; 广播公告内容..." maxlength="200">
-      <button class="act" id="announce-send">发送公告</button>
+      <input id="freeze-minutes" type="number" min="0" max="10080" value="0" style="width:110px;">
+      <span class="muted" id="freeze-hint">冻结时长（分钟），0 = 只踢不冻</span>
+      <span class="spacer"></span>
+      <input id="filter" placeholder="筛选 名称 / 频道 / 位置" style="width:200px;">
     </div>
+    <table>
+      <thead><tr>
+        <th class="sortable num" data-key="ID">连接 ID</th>
+        <th class="sortable" data-key="Name">名称</th>
+        <th class="sortable" data-key="channel">频道</th>
+        <th class="sortable" data-key="Location">位置</th>
+        <th class="sortable num" data-key="Latency">延迟</th>
+        <th>操作</th>
+      </tr></thead>
+      <tbody id="players-body"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+    </table>
   </section>
 
-  <section class="panel">
-    <h2 class="sec-title">在线玩家</h2>
+  <section>
+    <h2>临时冻结</h2>
+    <table>
+      <thead><tr><th class="num">账号 ID</th><th>名称</th><th class="num">剩余</th><th>原因</th><th>操作</th></tr></thead>
+      <tbody id="frozen-body"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+    </table>
+  </section>
+
+  <div class="two">
+    <section>
+      <h2>服务器日志 <span class="muted">(内存缓冲 1000 条；打开与切换筛选时拉全部，之后增量)</span></h2>
+      <div class="bar">
+        <select id="log-level">
+          <option value="all">全部</option>
+          <option value="info" selected>信息及以上</option>
+          <option value="warn">警告及以上</option>
+          <option value="err">仅错误</option>
+        </select>
+        <label class="muted"><input type="checkbox" id="log-follow" checked> 自动滚动</label>
+        <span class="spacer"></span>
+        <button class="small" id="log-clear">清屏</button>
+      </div>
+      <div class="scroll rows" id="log-body"><div class="empty">等待日志…</div></div>
+    </section>
+
+    <section>
+      <h2>聊天与公告 <span class="muted">(含私聊内容)</span></h2>
+      <div class="bar">
+        <select id="chat-type">
+          <option value="all">全部</option>
+          <option value="public" selected>公开 + 公告</option>
+          <option value="private">仅私聊</option>
+        </select>
+        <label class="muted"><input type="checkbox" id="chat-follow" checked> 自动滚动</label>
+        <span class="spacer"></span>
+        <button class="small" id="chat-clear">清屏</button>
+      </div>
+      <div class="scroll rows" id="chat-body"><div class="empty">暂无聊天</div></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>广播公告</h2>
     <div class="bar">
-      <input id="freeze-minutes" type="number" min="0" max="10080" value="0" style="flex:0 0 130px;max-width:130px;">
-      <span class="hint" id="freeze-hint">冻结时长（分钟），0 = 只踢不冻</span>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>连接 ID</th><th>名称</th><th>频道</th><th>位置</th><th>操作</th></tr></thead>
-        <tbody id="players-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2 class="sec-title">临时冻结</h2>
-    <div class="table-wrap" style="max-height:220px;">
-      <table>
-        <thead><tr><th>账号 ID</th><th>名称</th><th>剩余</th><th>原因</th><th>操作</th></tr></thead>
-        <tbody id="frozen-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2 class="sec-title">频道</h2>
-    <div class="table-wrap" style="max-height:150px;">
-      <table>
-        <thead><tr><th>ID</th><th>名称</th><th>玩家数</th></tr></thead>
-        <tbody id="channels-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody>
-      </table>
+      <input id="announce-input" placeholder="发给全服的公告…" maxlength="200" style="flex:1;min-width:240px;">
+      <button class="primary" id="announce-send">发送</button>
+      <span class="muted">支持 \s 删除线等聊天转义</span>
     </div>
   </section>
 </main>
@@ -146,76 +198,163 @@ button.kick:hover{background:rgba(255,56,96,.15);color:#ff3860;}
 "use strict";
 const $ = s => document.querySelector(s);
 
-function toast(msg, ok) {
+/* ---------- 小工具 ---------- */
+function toast(msg, kind) {
   const t = document.createElement("div");
-  t.className = "toast " + (ok ? "ok" : "err");
-  t.textContent = (ok ? "[OK] " : "[ERR] ") + msg;
+  t.className = "toast " + (kind || "");
+  t.textContent = msg;
   $("#toasts").appendChild(t);
-  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 300); }, 3200);
+  setTimeout(() => t.remove(), 4000);
 }
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+function hhmmss(iso) {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : d.toTimeString().slice(0, 8);
+}
+function latencyClass(ms) {
+  if (ms < 0) return "muted";
+  if (ms < 80) return "ok";
+  if (ms < 200) return "warn";
+  return "err";
+}
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#888";
+}
 
-// ---- 玩家列表 ----
+/* ---------- 图表（纯 SVG，无依赖） ---------- */
+function drawChart(hostId, capId, values, color, fmt) {
+  const host = $("#" + hostId), cap = $("#" + capId);
+  if (!values.length) { host.innerHTML = '<div class="empty">采样中…</div>'; cap.textContent = ""; return; }
+  const w = 600, h = 84, pad = 2;
+  const max = Math.max(1, ...values);
+  let pts;
+  if (values.length === 1) {
+    pts = "0," + (h - pad) + " " + w + "," + (h - pad);
+  } else {
+    pts = values.map((v, i) =>
+      (pad + i * (w - 2 * pad) / (values.length - 1)).toFixed(1) + "," +
+      (h - pad - (v / max) * (h - 2 * pad)).toFixed(1)).join(" ");
+  }
+  host.innerHTML = '<svg viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none">' +
+    '<polyline points="' + pts + '" fill="none" stroke="' + color +
+    '" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>';
+  cap.textContent = "峰值 " + fmt(max) + " · 当前 " + fmt(values[values.length - 1]);
+}
+
+/* ---------- 通用拉取 ---------- */
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+/* ---------- 状态 ---------- */
 let failCount = 0;
-async function refresh() {
+let lastStatus = null;
+async function refreshStatus() {
   let data;
   try {
-    const r = await fetch("/status");
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    data = await r.json();
+    data = await fetchJson("/status");
   } catch (e) {
     failCount++;
-    $("#live").classList.add("down");
-    $("#live-text").textContent = "重连中 (" + failCount + ")";
+    $("#live-dot").classList.add("down");
+    $("#live-text").textContent = "重连中（连续 " + failCount + " 次失败）";
     return;
   }
   failCount = 0;
-  $("#live").classList.remove("down");
-  $("#live-text").textContent = "实时";
-  $("#d-players").textContent = data.PlayersCount;
-  $("#d-channels").textContent = data.Channels.length;
-  $("#d-frozen").textContent = (data.Frozen ?? []).length;
-  renderFrozen(data.Frozen ?? []);
+  $("#live-dot").classList.remove("down");
+  $("#live-text").textContent = "已连接";
+  $("#stamp").textContent = new Date().toLocaleTimeString();
+  lastStatus = data;
 
-  const pb = $("#players-body");
-  pb.innerHTML = "";
+  $("#s-players").textContent = data.PlayersCount;
+  $("#s-frozen").textContent = (data.Frozen ?? []).length;
+  renderPlayers();
+  renderFrozen(data.Frozen ?? []);
+}
+
+/* ---------- 玩家表（排序 + 筛选） ---------- */
+let sortKey = "ID", sortDir = 1;
+function renderPlayers() {
+  const data = lastStatus;
+  if (!data) return;
+  const q = $("#filter").value.trim().toLowerCase();
   let players = [];
   for (const c of data.Channels)
     for (const p of c.Players) players.push({ ...p, channel: c.Name });
-  if (players.length === 0) {
-    pb.innerHTML = '<tr><td colspan="5" class="empty">当前没有在线玩家</td></tr>';
-  } else {
-    for (const p of players) {
-      const tr = document.createElement("tr");
-      const loc = (p.Location ?? "").trim() || "-";
-      const frozenTag = p.Frozen ? ' <span style="color:#ffb04d;font-size:11px;">[已冻结]</span>' : "";
-      tr.innerHTML = "<td>" + p.ID + "</td><td>" + esc(p.Name) + frozenTag + "</td><td>" + esc(p.channel) +
-        "</td><td>" + esc(loc) + "</td>";
-      const td = document.createElement("td");
-      const btn = document.createElement("button");
-      btn.className = "kick"; btn.textContent = freezeMinutes() > 0 ? "踢出并冻结" : "踢出";
-      btn.addEventListener("click", () => kick(p));
-      td.appendChild(btn); tr.appendChild(td);
-      pb.appendChild(tr);
-    }
-  }
 
-  const cb = $("#channels-body");
-  cb.innerHTML = "";
-  if (data.Channels.length === 0) {
-    cb.innerHTML = '<tr><td colspan="3" class="empty">当前没有频道</td></tr>';
-  } else {
-    for (const c of data.Channels) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = "<td>" + c.ID + "</td><td>" + esc(c.Name) + "</td><td>" + c.Players.length + "</td>";
-      cb.appendChild(tr);
-    }
+  if (q) players = players.filter(p =>
+    (p.Name ?? "").toLowerCase().includes(q) ||
+    (p.channel ?? "").toLowerCase().includes(q) ||
+    (p.Location ?? "").toLowerCase().includes(q));
+
+  players.sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if (typeof x === "number" && typeof y === "number") return (x - y) * sortDir;
+    return String(x ?? "").localeCompare(String(y ?? "")) * sortDir;
+  });
+
+  const tb = $("#players-body");
+  tb.innerHTML = "";
+  if (!players.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">没有匹配的在线玩家</td></tr>';
+    return;
+  }
+  for (const p of players) {
+    const tr = document.createElement("tr");
+    const lat = p.Latency ?? -1;
+    tr.innerHTML =
+      '<td class="num">' + p.ID + "</td>" +
+      "<td>" + esc(p.Name) + (p.Frozen ? ' <span class="tag warn">已冻结</span>' : "") + "</td>" +
+      "<td>" + esc(p.channel) + "</td>" +
+      "<td>" + esc((p.Location ?? "").trim() || "-") + "</td>" +
+      '<td class="num ' + latencyClass(lat) + '">' + (lat < 0 ? "—" : lat + " ms") + "</td>";
+    const td = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "small danger";
+    btn.textContent = freezeMinutes() > 0 ? "踢出并冻结" : "踢出";
+    btn.addEventListener("click", () => kick(p));
+    td.appendChild(btn); tr.appendChild(td);
+    tb.appendChild(tr);
+  }
+}
+document.querySelectorAll("th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.key;
+    sortDir = (sortKey === key) ? -sortDir : 1;
+    sortKey = key;
+    renderPlayers();
+  });
+});
+$("#filter").addEventListener("input", renderPlayers);
+
+/* ---------- 冻结列表 ---------- */
+function renderFrozen(list) {
+  const tb = $("#frozen-body");
+  tb.innerHTML = "";
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="empty">没有冻结中的账号</td></tr>';
+    return;
+  }
+  for (const f of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td class="num">' + f.AuthID + "</td>" +
+      "<td>" + esc(f.Name ?? "-") + "</td>" +
+      '<td class="num">' + f.RemainingMinutes + " 分</td>" +
+      "<td>" + esc(f.Reason ?? "-") + "</td>";
+    const td = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "small"; btn.textContent = "解冻";
+    btn.addEventListener("click", () => unfreeze(f));
+    td.appendChild(btn); tr.appendChild(td);
+    tb.appendChild(tr);
   }
 }
 
-// ---- 踢人 / 踢人并冻结 ----
+/* ---------- 操作 ---------- */
 function freezeMinutes() {
   const v = parseInt($("#freeze-minutes").value, 10);
   return Number.isFinite(v) && v > 0 ? Math.min(v, 10080) : 0;
@@ -230,70 +369,186 @@ async function kick(p) {
     let url = "/player?cid=" + encodeURIComponent(p.ID) + "&reason=" + encodeURIComponent(reason);
     if (mins > 0) url += "&minutes=" + mins;
     const r = await fetch(url, { method: "DELETE" });
-    if (r.status === 204) { toast("已" + action + " " + p.Name, true); refresh(); }
-    else if (r.status === 404) toast("玩家 " + p.Name + " 已不在线", false);
-    else toast(action + "失败 (HTTP " + r.status + ")", false);
-  } catch (e) { toast("请求失败", false); }
-}
-
-// ---- 临时冻结列表 ----
-function renderFrozen(list) {
-  const fb = $("#frozen-body");
-  fb.innerHTML = "";
-  if (list.length === 0) {
-    fb.innerHTML = '<tr><td colspan="5" class="empty">当前没有冻结中的账号</td></tr>';
-    return;
-  }
-  for (const f of list) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = "<td>" + f.AuthID + "</td><td>" + esc(f.Name ?? "-") + "</td><td>" +
-      f.RemainingMinutes + " 分</td><td>" + esc(f.Reason ?? "-") + "</td>";
-    const td = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.className = "act";
-    btn.style.padding = "4px 10px"; btn.style.fontSize = "12px";
-    btn.textContent = "解冻";
-    btn.addEventListener("click", () => unfreeze(f));
-    td.appendChild(btn); tr.appendChild(td);
-    fb.appendChild(tr);
-  }
+    if (r.status === 204) { toast("已" + action + " " + p.Name, "ok"); refreshStatus(); }
+    else if (r.status === 404) toast("玩家 " + p.Name + " 已不在线", "err");
+    else if (r.status === 400 && mins > 0) toast("服务端拒绝了冻结（该账号 id 不可冻结，例如免登录构建）；把时长设为 0 可以只踢出", "err");
+    else toast(action + "失败（HTTP " + r.status + "）", "err");
+  } catch (e) { toast("请求失败", "err"); }
 }
 async function unfreeze(f) {
   const label = f.Name ?? ("账号 " + f.AuthID);
   if (!confirm("解除 " + label + " 的冻结？")) return;
   try {
     const r = await fetch("/freeze?aid=" + encodeURIComponent(f.AuthID), { method: "DELETE" });
-    if (r.status === 204) { toast("已解冻 " + label, true); refresh(); }
-    else toast("解冻失败 (HTTP " + r.status + ")", false);
-  } catch (e) { toast("请求失败", false); }
+    if (r.status === 204) { toast("已解冻 " + label, "ok"); refreshStatus(); }
+    else toast("解冻失败（HTTP " + r.status + "）", "err");
+  } catch (e) { toast("请求失败", "err"); }
 }
-
-// ---- 发公告 ----
 async function sendAnnounce() {
   const input = $("#announce-input");
   const msg = input.value.trim();
-  if (!msg) { toast("公告内容不能为空", false); return; }
+  if (!msg) return;
   try {
     const r = await fetch("/announce?msg=" + encodeURIComponent(msg));
-    if (r.status === 204) { toast("公告已发送", true); input.value = ""; }
-    else toast("发送失败 (HTTP " + r.status + ")", false);
-  } catch (e) { toast("请求失败", false); }
+    if (r.status === 204) { toast("公告已发送", "ok"); input.value = ""; }
+    else toast("发送失败（HTTP " + r.status + "）", "err");
+  } catch (e) { toast("请求失败", "err"); }
 }
 $("#announce-send").addEventListener("click", sendAnnounce);
 $("#announce-input").addEventListener("keydown", e => { if (e.key === "Enter") sendAnnounce(); });
-
-// ---- 冻结时长输入 ----
 function updateFreezeHint() {
   const mins = freezeMinutes();
   $("#freeze-hint").textContent = mins > 0
-    ? "冻结时长（分钟），点「踢出」将同时冻结该账号 " + mins + " 分钟"
+    ? "冻结时长（分钟）：点「踢出并冻结」会把该账号冻结 " + mins + " 分钟"
     : "冻结时长（分钟），0 = 只踢不冻";
 }
 $("#freeze-minutes").addEventListener("input", updateFreezeHint);
 updateFreezeHint();
 
-refresh();
-setInterval(refresh, 3000);
+/* ---------- 日志（增量 seq） ---------- */
+let logSeq = 0;
+const logLevels = ["Trace", "Debug", "Information", "Warning", "Error", "Critical"];
+function logPasses(level) {
+  const mode = $("#log-level").value;
+  const i = logLevels.indexOf(level);
+  if (mode === "all") return true;
+  if (mode === "info") return i >= 2;
+  if (mode === "warn") return i >= 3;
+  return i >= 4;
+}
+function levelClass(level) {
+  const i = logLevels.indexOf(level);
+  return i >= 4 ? "err" : (i === 3 ? "warn" : "muted");
+}
+function appendLog(items) {
+  const box = $("#log-body");
+  if (box.querySelector(".empty")) box.innerHTML = "";
+  for (const it of items) {
+    if (!logPasses(it.Level)) continue;
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML =
+      '<span class="t">' + hhmmss(it.At) + "</span>" +
+      '<span class="lv ' + levelClass(it.Level) + '">' + esc(it.Level) + "</span>" +
+      '<span class="cat">' + esc(it.Category) + "</span>" +
+      '<span class="msg">' + esc(it.Message) + "</span>";
+    box.appendChild(div);
+  }
+  while (box.childElementCount > 500) box.removeChild(box.firstChild);
+  if ($("#log-follow").checked) box.scrollTop = box.scrollHeight;
+}
+async function refreshLogs(reset) {
+  if (logBusy) return;
+  logBusy = true;
+  try {
+    // reset（首次打开 / 切换筛选）时拉满整个缓冲，平时只拉增量
+    const data = await fetchJson("/logs?since=" + logSeq + "&max=" + (reset ? 1000 : 200));
+    if (data.LatestSeq < logSeq) {
+      // 服务端重启过（seq 归零）：回头重拉，否则整段缓冲会被跳过
+      logSeq = 0;
+      logBusy = false;
+      await refreshLogs(true);
+      return;
+    }
+    logSeq = data.LatestSeq;
+    if (data.Items.length) appendLog(data.Items);
+    ensurePlaceholder($("#log-body"), "没有符合筛选的日志（更早的条目已不在窗口内）");
+  } catch (e) { /* 下一轮再试 */ } finally { logBusy = false; }
+}
+let logBusy = false;
+$("#log-level").addEventListener("change", () => { $("#log-body").innerHTML = ""; logSeq = 0; refreshLogs(true); });
+$("#log-clear").addEventListener("click", () => { $("#log-body").innerHTML = '<div class="empty">已清屏（服务端缓冲仍在）</div>'; });
+
+/* ---------- 聊天（增量 seq） ---------- */
+let chatSeq = 0;
+function chatPasses(type) {
+  const mode = $("#chat-type").value;
+  if (mode === "all") return true;
+  if (mode === "private") return type === "PrivateMessage";
+  return type !== "PrivateMessage";
+}
+function ensurePlaceholder(box, text) {
+  if (box.childElementCount === 0) box.innerHTML = '<div class="empty">' + text + "</div>";
+}
+function appendChat(items) {
+  const box = $("#chat-body");
+  if (box.querySelector(".empty")) box.innerHTML = "";
+  for (const it of items) {
+    if (!chatPasses(it.Type)) continue;
+    const div = document.createElement("div");
+    div.className = "row";
+    const who = it.Name ? esc(it.Name) : (it.Type === "Server" ? "服务器" : "?");
+    const to = it.Target ? " → " + esc(it.Target) : "";
+    div.innerHTML =
+      '<span class="t">' + hhmmss(it.At) + "</span>" +
+      '<span class="cat">' + esc(it.Type) + "</span>" +
+      '<span class="msg"><b>' + who + "</b>" + to + "：" + esc(it.Content) + "</span>";
+    box.appendChild(div);
+  }
+  while (box.childElementCount > 300) box.removeChild(box.firstChild);
+  if ($("#chat-follow").checked) box.scrollTop = box.scrollHeight;
+}
+async function refreshChat(reset) {
+  if (chatBusy) return;
+  chatBusy = true;
+  try {
+    const data = await fetchJson("/chat?since=" + chatSeq + "&max=" + (reset ? 500 : 200));
+    if (data.LatestSeq < chatSeq) {
+      // 服务端重启过（seq 归零）：回头重拉
+      chatSeq = 0;
+      chatBusy = false;
+      await refreshChat(true);
+      return;
+    }
+    chatSeq = data.LatestSeq;
+    if (data.Items.length) appendChat(data.Items);
+    ensurePlaceholder($("#chat-body"), "没有符合筛选的聊天");
+  } catch (e) { /* 下一轮再试 */ } finally { chatBusy = false; }
+}
+let chatBusy = false;
+$("#chat-type").addEventListener("change", () => { $("#chat-body").innerHTML = ""; chatSeq = 0; refreshChat(true); });
+$("#chat-clear").addEventListener("click", () => { $("#chat-body").innerHTML = '<div class="empty">已清屏（服务端缓冲仍在）</div>'; });
+
+/* ---------- 指标 ---------- */
+async function refreshMetrics() {
+  let data;
+  try { data = await fetchJson("/metrics/history"); } catch (e) { return; }
+  const samples = data.Samples ?? [];
+  const last = samples[samples.length - 1];
+  if (last) {
+    $("#s-cpu").textContent = last.CpuPercent.toFixed(1) + "%";
+    $("#s-alloc").textContent = last.AllocMbPerSec.toFixed(1) + " MB/s";
+    $("#s-up").textContent = last.UploadMbps.toFixed(2) + " Mbps";
+    $("#s-pkts").textContent = Math.round(last.PacketsPerSec) + " /s";
+  }
+  const ink = cssVar("--accent");
+  drawChart("chart-cpu", "cap-cpu", samples.map(s => s.CpuPercent), ink, v => v.toFixed(1) + "%");
+  drawChart("chart-alloc", "cap-alloc", samples.map(s => s.AllocMbPerSec), ink, v => v.toFixed(1) + " MB/s");
+}
+
+/* ---------- 主循环 ---------- */
+let timer = null;
+let lastMetrics = 0;
+function tick() {
+  refreshStatus();
+  refreshLogs();
+  refreshChat();
+  const now = Date.now();
+  if (now - lastMetrics > 15000) { lastMetrics = now; refreshMetrics(); }
+}
+function start() {
+  if (timer) clearInterval(timer);
+  const seconds = parseInt($("#interval").value, 10) || 3;
+  timer = setInterval(tick, seconds * 1000);
+  // 首轮/切换刷新间隔时，重新拉满缓冲（增量由 tick 负责）
+  logSeq = 0; chatSeq = 0; lastMetrics = 0;
+  refreshLogs(true);
+  refreshChat(true);
+  refreshStatus();
+  tick();
+}
+$("#interval").addEventListener("change", start);
+start();
 </script>
 </body>
 </html>

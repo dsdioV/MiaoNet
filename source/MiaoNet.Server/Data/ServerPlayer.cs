@@ -24,6 +24,15 @@ public sealed class ServerPlayer
 
     public PlayerGlobalFlags GlobalFlags { get; set; }
 
+    /// <summary>最近一次心跳测出的 RTT（毫秒）；-1 = 超时/尚未测到。本地管理面板读取。</summary>
+    public int LastPing
+    {
+        get => Volatile.Read(ref lastPing);
+        set => Volatile.Write(ref lastPing, value);
+    }
+
+    private int lastPing = -1;
+
     public ServerPlayer(ServerChannel channel, int id, PlayerInfo info)
     {
         fireworksTokenBucket = new(500, 500 * 3);
