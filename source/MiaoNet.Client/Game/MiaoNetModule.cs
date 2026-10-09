@@ -16,6 +16,9 @@ public sealed class MiaoNetModule : EverestModule
 
     private static bool seenOverworld;
 
+    // pause menu awaiting de-duplication, see Level_OnPause
+    private static TextMenu? pauseMenuPendingDedup;
+
     public static MiaoNetModule Instance { get; private set; } = null!;
 
     public override Type SettingsType => typeof(MiaoNetModuleSettings);
@@ -64,6 +67,7 @@ public sealed class MiaoNetModule : EverestModule
         using (new DetourConfigContext(RootConfig).Use())
         {
             Everest.Events.Level.OnCreatePauseMenuButtons += Level_OnCreatePauseMenuButtons;
+            Everest.Events.Level.OnPause += Level_OnPause;
             IL.Monocle.Engine.Update += Engine_Update;
             IL.Monocle.Engine.RenderCore += Engine_RenderCore;
             Everest.Events.Level.OnExit += Level_OnExit;
@@ -103,6 +107,7 @@ public sealed class MiaoNetModule : EverestModule
         miaoNetContext?.Disconnect();
         ClientRC.Stop();
         Everest.Events.Level.OnCreatePauseMenuButtons -= Level_OnCreatePauseMenuButtons;
+        Everest.Events.Level.OnPause -= Level_OnPause;
         IL.Monocle.Engine.Update -= Engine_Update;
         IL.Monocle.Engine.RenderCore -= Engine_RenderCore;
         Everest.Events.Level.OnExit -= Level_OnExit;
@@ -419,6 +424,9 @@ public sealed class MiaoNetModule : EverestModule
 
     private static void Level_OnCreatePauseMenuButtons(Level level, TextMenu menu, bool minimal)
     {
+        // any early return below must not leave a stale menu behind for Level_OnPause
+        pauseMenuPendingDedup = null;
+
         if (!Core.CoreModule.Settings.ShowModOptionsInGame)
             return;
 
@@ -432,8 +440,12 @@ public sealed class MiaoNetModule : EverestModule
         if (menuOptionsIndex == -1)
             return;
 
-        // generate our options menu
-        TextMenu.Item item = new TextMenu.Button(Dialog.Get("miaonet_menu_options"));
+        // the other side of the merged Verðandi package inserts an entry with the
+        // very same label, which Level_OnPause drops once every side had its turn
+        pauseMenuPendingDedup = menu;
+
+        // generate our server picker
+        TextMenu.Item item = new MiaoNetPauseMenuButton(Dialog.Get("miaonet_menu_options"));
         item.Pressed(() =>
         {
             menu.RemoveSelf();
@@ -444,8 +456,7 @@ public sealed class MiaoNetModule : EverestModule
             bool oldAllowHudHide = level.AllowHudHide;
             level.AllowHudHide = false;
             TextMenu options = new TextMenu();
-            MenuMiaoNetOptions.BuildHeader(options);
-            MenuMiaoNetOptions.BuildMenu(options, true);
+            MiaoNetServerPicker.Build(options);
             options.OnESC = options.OnCancel = () =>
             {
                 Audio.Play(SFX.ui_main_button_back);
@@ -467,5 +478,55 @@ public sealed class MiaoNetModule : EverestModule
 
         // insert right after it
         menu.Insert(menuOptionsIndex + 1, item);
+    }
+
+    /// <summary>
+    /// Collapses the duplicated MiaoNet pause menu entry of the merged Verðandi
+    /// package into our own.
+    ///
+    /// Each meta of that package brings its own assembly, and both of them
+    /// subscribe <see cref="Everest.Events.Level.OnCreatePauseMenuButtons"/> and
+    /// insert a button labelled <c>miaonet_menu_options</c>. Everest raises
+    /// <see cref="Everest.Events.Level.OnPause"/> only after every
+    /// OnCreatePauseMenuButtons handler has run, so by now the other side's entry
+    /// is in the list and can be dropped here -- without it having to know about
+    /// us. Everything that is not ours is removed, which also covers a third side
+    /// should the package ever carry one.
+    /// </summary>
+    private static void Level_OnPause(Level level, int startIndex, bool minimal, bool quickReset)
+    {
+        TextMenu? menu = pauseMenuPendingDedup;
+        pauseMenuPendingDedup = null;
+        if (menu is null)
+            return;
+
+        if (!menu.Items.Any(item => item is MiaoNetPauseMenuButton))
+        {
+            // our entry never made it in, leave the other side's alone
+            Logger.Warn(LT.MiaoNet, "Our pause menu entry is missing, keeping the others.");
+            return;
+        }
+
+        // every side inserts at the same index, so the copies end up in any order
+        string label = Dialog.Get("miaonet_menu_options");
+        int removed = 0;
+        for (int i = menu.Items.Count - 1; i >= 0; i--)
+        {
+            TextMenu.Item item = menu.Items[i];
+            if (item.GetType() == typeof(TextMenu.Button) && ((TextMenu.Button)item).Label == label)
+            {
+                menu.Remove(item);
+                removed++;
+            }
+        }
+
+        if (removed > 0)
+        {
+            // TextMenu.Remove does not clamp Selection, and the dropped entry may
+            // have been the last one; clamping directly avoids the OnLeave/OnEnter
+            // callbacks that MoveSelection would fire while the menu is still fresh
+            menu.Selection = Math.Clamp(menu.Selection, 0, menu.Items.Count - 1);
+            Logger.Info(LT.MiaoNet, $"Removed {removed} duplicated MiaoNet pause menu entry.");
+        }
     }
 }

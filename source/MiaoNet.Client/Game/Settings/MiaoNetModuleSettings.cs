@@ -52,6 +52,10 @@ public sealed class MiaoNetModuleSettings : EverestModuleSettings,
     [YamlIgnore]
     public bool IgnoreCertRevocationStatus { get; set; }
 
+    // Which side of the merged Verðandi package the pause menu entry talks to,
+    // stored as that meta's name. Null means our own side.
+    public string? LastSelectedServer { get; set; }
+
     #endregion
 
     #region Visuals
