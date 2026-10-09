@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Text;
 
 namespace Celeste.Mod.MiaoNet;
@@ -52,7 +52,7 @@ public static class ClientRC
         try
         {
             HttpListener listener = new();
-            listener.Prefixes.Add("http://localhost:21472/");
+            listener.Prefixes.Add("http://localhost:38038/");
             token.Register(state =>
             {
                 var l = (HttpListener)state!;

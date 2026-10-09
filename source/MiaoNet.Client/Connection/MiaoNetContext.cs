@@ -39,7 +39,7 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
 #if DEBUG
     public string TargetServer { get; set; } = "127.0.0.1";
 #else
-    public string TargetServer { get; set; } = "s.saplonily.top";
+    public string TargetServer { get; set; } = "s.voidsd.top";
 #endif
 
     public int TargetPort { get; set; } = 21473;
@@ -342,7 +342,7 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
             {
                 QueueForOperation(operation.Generation, () =>
                 {
-                    Emoji.Register(sid, GFX.Gui["miaonet/missing_avatar"], 64, 64);
+                    Emoji.Register(sid, GFX.Gui["miaonet/default_avatar"], 64, 64);
                     Emoji.Fill(MiaoNetFont.ENZhsFont);
                 });
                 return;
