@@ -26,6 +26,14 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
     public const string EndPointCodeAuth = "oauth/token";
     public const string EndPointAuth = "api/celeste/user?access_token=";
 
+    // OAuth requires this to match the redirect_uri the authorization code was
+    // issued for, i.e. the client's ClientRC listener port. The Verðandi dual
+    // package runs two MiaoNet modules at once, so this fork's client listens on
+    // 38038 while the official alpha client keeps 21472 -- upstream hardcodes
+    // 21472 here, which makes the code exchange fail with redirect_uri_mismatch.
+    // This must stay in sync with ClientRC.cs in MiaoNet.Client.
+    public const string RedirectUri = "http://localhost:38038/auth";
+
     public CeleMiaoAuthenticator(IOptions<AuthenticationOptions> options, ILogger<CeleMiaoAuthenticator> logger)
         : this(options, logger, new HttpClient())
     {
@@ -118,7 +126,7 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
                     client_secret = clientSecret,
                     grant_type = "authorization_code",
                     code = authCode,
-                    redirect_uri = "http://localhost:21472/auth"
+                    redirect_uri = RedirectUri
                 };
                 var res = await PostAuthAsync(content, token);
                 res.EnsureSuccessStatusCode();
@@ -180,7 +188,7 @@ public sealed partial class CeleMiaoAuthenticator : IMiaoAuthenticator
                         client_secret = clientSecret,
                         grant_type = "refresh_token",
                         refresh_token = tokenObject.RefreshToken,
-                        redirect_uri = "http://localhost:21472/auth"
+                        redirect_uri = RedirectUri
                     };
                     var res = await PostAuthAsync(content, token);
                     res.EnsureSuccessStatusCode();
