@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
@@ -33,11 +33,30 @@ public static class AvatarManager
         PathAvatarCache = Path.Combine(pathCache, "MiaoNet", "AvatarCache");
 
         httpClient = new();
-        string ua = $"MiaoNet.Client/{MiaoNetModule.Instance.Metadata.VersionString}";
+        string ua = $"MiaoNet.Client/{AsciiSafe(MiaoNetModule.Instance.Metadata.VersionString)}";
         httpClient.DefaultRequestHeaders.Add("User-Agent", ua);
         Logger.Info(LT.MiaoNetAvatar, $"Using User-Agent {ua}.");
 
         MigrateLegacyCache();
+    }
+
+    /// <summary>
+    /// HTTP header values must be ASCII: <see cref="HttpClient"/>'s header
+    /// parser answers anything else with a <see cref="FormatException"/>.
+    /// A mod version is free-form (ours is "0.6.0-Verðandi-dev"), and because
+    /// this value is consumed from a static constructor a throw here poisons
+    /// <see cref="AvatarManager"/> for the rest of the session -- every avatar
+    /// then silently falls back to the default one.
+    /// </summary>
+    private static string AsciiSafe(string value)
+    {
+        char[] chars = value.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] is < (char)0x20 or > (char)0x7E)
+                chars[i] = '-';
+        }
+        return new string(chars);
     }
 
     public static Task<string> GetAsync(Uri uri)
