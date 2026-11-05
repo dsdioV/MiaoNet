@@ -247,10 +247,290 @@ public sealed class CelesteNetPlayerFrameCodecTests
         => string.Join(' ', bytes.ToArray().Select(static b => b.ToString("x2", CultureInfo.InvariantCulture)));
 }
 
-/// <summary>
-/// Builds <c>playerGraphics</c> payloads by hand, since the bridge never writes that frame and
-/// therefore has no encoder for it.
-/// </summary>
+[TestClass]
+public sealed class CelesteNetFrameSynthesizerTests
+{
+    private const uint PlayerID = 9;
+
+    private const string TemplateHairTexture = "characters/player/bangs3";
+
+    [TestMethod]
+    public void UnknownAnimationNameKeepsTheCurrentAnimation()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, NewInput() with { AnimationName = "dance" });
+
+        Assert.AreEqual(-1, frame.AnimationID);
+    }
+
+    [TestMethod]
+    public void DeathIsRememberedAcrossFrames()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        synthesizer.SetDead(PlayerID, true);
+        Assert.IsTrue(SynthesiseOne(synthesizer, NewInput() with { PositionX = 1f }).Dead);
+
+        synthesizer.SetDead(PlayerID, false);
+        Assert.IsFalse(SynthesiseOne(synthesizer, NewInput() with { PositionX = 2f }).Dead);
+    }
+
+    [TestMethod]
+    public void DashKindIsTakenFromTheDashCountAtDashStart()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        // A dash that started with no dashes left is an A dash, and stays one while it runs.
+        CelesteNetPlayerFrame first = SynthesiseOne(
+            synthesizer,
+            NewInput() with { Dashing = true, Dashes = 0, DashDirection = 42 }
+        );
+        Assert.IsTrue(first.Dashing);
+        Assert.IsFalse(first.DashWasB);
+        Assert.AreEqual(42, first.DashDirection);
+
+        CelesteNetPlayerFrame sameDash = SynthesiseOne(
+            synthesizer,
+            NewInput() with { Dashing = true, Dashes = 1, DashDirection = 42 }
+        );
+        Assert.IsFalse(sameDash.DashWasB, "A dash already running does not change its particle type.");
+
+        SynthesiseOne(synthesizer, NewInput() with { Dashing = false, Dashes = 1 });
+
+        CelesteNetPlayerFrame nextDash = SynthesiseOne(
+            synthesizer,
+            NewInput() with { Dashing = true, Dashes = 1, DashDirection = 7 }
+        );
+        Assert.IsTrue(nextDash.DashWasB);
+        Assert.AreEqual(7, nextDash.DashDirection);
+
+        CelesteNetPlayerFrame noDash = SynthesiseOne(synthesizer, NewInput() with { Dashing = false });
+        Assert.IsFalse(noDash.Dashing);
+        Assert.IsFalse(noDash.DashWasB);
+    }
+
+    [TestMethod]
+    public void SpeedIsDerivedFromPositionDelta()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        CelesteNetPlayerFrame first = SynthesiseOne(
+            synthesizer,
+            NewInput() with { PositionX = 0f, PositionY = 0f, DeltaSeconds = 1f / 60f }
+        );
+        Assert.AreEqual(0f, first.SpeedX);
+
+        CelesteNetPlayerFrame second = SynthesiseOne(
+            synthesizer,
+            NewInput() with { PositionX = 6f, PositionY = -3f, DeltaSeconds = 1f / 60f }
+        );
+        // The wire truncates speed to an integer, so a 6 px frame at 60 Hz lands on 359 or 360.
+        Assert.AreEqual(360f, second.SpeedX, 1f);
+        Assert.AreEqual(-180f, second.SpeedY, 1f);
+    }
+
+    [TestMethod]
+    public void BacklogOfDeltasYieldsOneFramePerPlayerPerEngineFrame()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        Assert.IsTrue(synthesizer.Queue(NewInput() with { PositionX = 1f }, 5));
+        Assert.IsTrue(synthesizer.Queue(NewInput() with { PositionX = 2f }, 5));
+        Assert.IsTrue(synthesizer.Queue(NewInput() with { PositionX = 3f }, 5));
+
+        Assert.IsEmpty(synthesizer.Drain(5), "The current engine frame is still open.");
+
+        IReadOnlyList<CelesteNetSynthesisedFrame> frames = synthesizer.Drain(6);
+        Assert.HasCount(1, frames);
+        Assert.AreEqual(3f, Decode(frames[0]).PositionX, "The newest delta of the burst wins.");
+        Assert.IsEmpty(synthesizer.Drain(6));
+    }
+
+    [TestMethod]
+    public void EachPlayerGetsItsOwnFrameInTheSameEngineFrame()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+        synthesizer.AcceptGraphics(PlayerID + 1, Graphics());
+
+        synthesizer.Queue(NewInput() with { PositionX = 1f }, 5);
+        synthesizer.Queue(NewInput() with { PlayerID = PlayerID + 1, PositionX = 2f }, 5);
+
+        IReadOnlyList<CelesteNetSynthesisedFrame> frames = synthesizer.Drain(6);
+        Assert.HasCount(2, frames);
+        Assert.IsTrue(frames.Any(frame => frame.PlayerID == PlayerID));
+        Assert.IsTrue(frames.Any(frame => frame.PlayerID == PlayerID + 1));
+    }
+
+    [TestMethod]
+    public void TombstoneDropsPendingAndFutureFrames()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        Assert.IsTrue(synthesizer.Queue(NewInput(), 5));
+
+        // The player left MiaoNet: the bridge queues a dead playerInfo right after this, so any frame
+        // still buffered here would reach the client after its reference was freed.
+        synthesizer.Tombstone(PlayerID);
+        Assert.IsTrue(synthesizer.IsTombstoned(PlayerID));
+        Assert.IsEmpty(synthesizer.Drain(6), "A frame buffered before the tombstone must not be sent.");
+
+        Assert.IsFalse(synthesizer.Queue(NewInput(), 6));
+        Assert.IsEmpty(synthesizer.Drain(7));
+    }
+
+    [TestMethod]
+    public void RevivingAPlayerAllowsNewFrames()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+        synthesizer.Tombstone(PlayerID);
+
+        synthesizer.Revive(PlayerID);
+
+        Assert.IsFalse(synthesizer.IsTombstoned(PlayerID));
+        Assert.IsTrue(synthesizer.Queue(NewInput(), 5));
+        Assert.HasCount(1, synthesizer.Drain(6));
+    }
+
+    [TestMethod]
+    public void WithoutATemplateTheDefaultHairPaletteIsUsed()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        // Draw counts from the relayed graphics; the color comes from MiaoNet's default palette.
+        synthesizer.AcceptGraphics(PlayerID, Graphics(hairCount: 4, hairTextures: ["characters/player/bangs0"]));
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, NewInput() with { Dashes = 0 });
+
+        CelesteNetColor dash0 = new(0x44, 0xB7, 0xFF);
+        Assert.HasCount(4, frame.HairColors);
+        Assert.AreEqual(dash0.Pack(), frame.HairColors[0].Pack());
+        Assert.AreEqual("characters/player/bangs0", frame.HairTexture0);
+
+        CelesteNetPlayerFrame starFrame = SynthesiseOne(
+            synthesizer,
+            NewInput() with { Dashes = 0, StarFlying = true, PositionX = 5f }
+        );
+        CelesteNetColor feather = new(0xF2, 0xEB, 0x6D);
+        Assert.AreEqual(feather.Pack(), starFrame.HairColors[0].Pack());
+    }
+
+    [TestMethod]
+    public void HeldItemsCelesteNetCannotExpressAreOmitted()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        Assert.IsNotNull(SynthesiseOne(
+            synthesizer,
+            NewInput() with { Holdable = new() { Kind = CelesteNetHoldableKind.Theo } }
+        ).Holding);
+
+        CelesteNetPlayerFrame jelly = SynthesiseOne(
+            synthesizer,
+            NewInput() with {
+                Holdable = new() {
+                    Kind = CelesteNetHoldableKind.Jelly,
+                    AnimationID = "squished",
+                    AnimationFrame = 3,
+                    ScaleX = 0.5f,
+                    ScaleY = 0.75f,
+                },
+            }
+        );
+        Assert.IsNotNull(jelly.Holding);
+        Assert.AreEqual("glider", jelly.Holding.SpriteID);
+        Assert.AreEqual("squished", jelly.Holding.AnimationID);
+        Assert.AreEqual(3, jelly.Holding.AnimationFrame);
+        Assert.AreEqual(0.5f, jelly.Holding.ScaleX);
+
+        Assert.IsNull(SynthesiseOne(
+            synthesizer,
+            NewInput() with { Holdable = new() { Kind = CelesteNetHoldableKind.Unsupported } }
+        ).Holding);
+        Assert.IsNull(SynthesiseOne(synthesizer, NewInput()).Holding);
+    }
+
+    [TestMethod]
+    public void ClearPendingAndResetTransientStateForgetBufferedWork()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+        synthesizer.Queue(NewInput() with { PositionX = 1f }, 5);
+        synthesizer.ClearPending();
+        Assert.IsEmpty(synthesizer.Drain(6));
+
+        synthesizer.Queue(NewInput() with { PositionX = 5f }, 6);
+        Assert.AreEqual(5f, Decode(synthesizer.Drain(7)[0]).PositionX);
+        synthesizer.ResetTransientState();
+        CelesteNetPlayerFrame reset = SynthesiseOne(synthesizer, NewInput() with { PositionX = 9f });
+        Assert.AreEqual(0f, reset.SpeedX, "A map change forgets the previous position.");
+    }
+
+    [TestMethod]
+    public void DeadStartsFalseAndFollowsTheLiveStateEdges()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        Assert.IsFalse(
+            SynthesiseOne(synthesizer, NewInput()).Dead,
+            "Without a LiveState event a player is alive, even before the first delta."
+        );
+
+        synthesizer.SetDead(PlayerID, true);
+        Assert.IsTrue(SynthesiseOne(synthesizer, NewInput() with { PositionX = 1f }).Dead);
+
+        synthesizer.SetDead(PlayerID, false);
+        Assert.IsFalse(SynthesiseOne(synthesizer, NewInput() with { PositionX = 2f }).Dead);
+    }
+
+    private static CelesteNetPlayerFrame SynthesiseOne(CelesteNetFrameSynthesizer synthesizer, CelesteNetPlayerFrameInput input)
+    {
+        ulong frame = 100;
+        Assert.IsTrue(synthesizer.Queue(input, frame));
+        IReadOnlyList<CelesteNetSynthesisedFrame> frames = synthesizer.Drain(frame + 1);
+        Assert.HasCount(1, frames);
+        return Decode(frames[0]);
+    }
+
+    private static CelesteNetPlayerFrame Decode(CelesteNetSynthesisedFrame frame)
+    {
+        Assert.IsTrue(CelesteNetPlayerFrame.TryDecode(frame.Payload, out CelesteNetPlayerFrame? decoded));
+        Assert.IsNotNull(decoded);
+        return decoded;
+    }
+
+    private static CelesteNetPlayerFrameInput NewInput() => new() {
+        PlayerID = PlayerID,
+        AnimationName = "idle",
+        Dashes = 0,
+        DeltaSeconds = 1f / 60f,
+    };
+
+    private static CelesteNetPlayerGraphics Graphics(int hairCount = 4, string[]? hairTextures = null)
+    {
+        byte[] payload = CelesteNetTestPayloads.PlayerGraphics(
+            animations: ["idle", "walk", "run"],
+            hairCount: hairCount,
+            hairTextures: hairTextures ?? [TemplateHairTexture, "characters/player/hair07"],
+            depth: 0,
+            spriteMode: 0
+        );
+
+        Assert.IsTrue(CelesteNetPlayerGraphics.TryDecode(payload, out CelesteNetPlayerGraphics? graphics));
+        Assert.IsNotNull(graphics);
+        return graphics;
+    }
+}
+
 internal static class CelesteNetTestPayloads
 {
     private const string Source = "CelesteNet.Shared";
@@ -269,7 +549,7 @@ internal static class CelesteNetTestPayloads
         AddNetString(body, "playerPubSt");
         body.Add(1);
         body.Add(0x03);
-        // The bound meta: playerInfo, id, alive.
+        // MetaBoundRef: bound to playerInfo, id, alive.
         AddNetString(body, "bound");
         body.Add((byte)(11 + 1 + 1));
         AddNetString(body, "playerInfo");
