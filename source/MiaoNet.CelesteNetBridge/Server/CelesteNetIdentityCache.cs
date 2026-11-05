@@ -9,17 +9,20 @@ namespace MiaoNet.CelesteNetBridge.Server;
 /// <remarks>
 /// A player record is deliberately not cached. The receiver discards every <c>playerInfo</c> that
 /// arrives from a peer and synthesises the remote record from MiaoNet before that player's first frame,
-/// so an answer that carried it would only put dead bytes on the wire.
+/// so an answer that carried it would only put dead bytes on the wire. The optional appearance frame
+/// is the newest real <c>playerFrame</c>: a peer that synthesises frames locally takes hair colors,
+/// hair texture, the sprite tint and the follower/holding styling from it.
 /// </remarks>
 public sealed class CelesteNetIdentityCache
 {
     public const string PlayerInfoTypeId = "playerInfo";
     public const string PlayerGraphicsTypeId = "playerGraphics";
     public const string PlayerStateTypeId = "playerState";
+    public const string PlayerFrameTypeId = "playerFrame";
 
-    private readonly byte[]?[] frames = new byte[]?[2];
+    private readonly byte[]?[] frames = new byte[]?[3];
 
-    /// <summary>Whether every identity frame a ghost cannot be born without is known.</summary>
+    /// <summary>Whether the two frames a ghost cannot be born without are known. The appearance frame is optional.</summary>
     public bool IsComplete => frames[0] is not null && frames[1] is not null;
 
     /// <summary>Stores the newest payload of one identity type.</summary>
@@ -40,8 +43,8 @@ public sealed class CelesteNetIdentityCache
     }
 
     /// <summary>
-    /// The identity frames in the order the real client can bind them: graphics, then state. Responding
-    /// consumes nothing, so asking twice is harmless.
+    /// The identity frames in the order the real client can bind them: graphics, then state, then the
+    /// appearance keyframe when one is known. Responding consumes nothing, so asking twice is harmless.
     /// </summary>
     public bool TryBuildResponse(out byte[][] frames)
     {
@@ -51,7 +54,9 @@ public sealed class CelesteNetIdentityCache
             return false;
         }
 
-        frames = [this.frames[0]!, this.frames[1]!];
+        frames = this.frames[2] is { } appearance
+            ? [this.frames[0]!, this.frames[1]!, appearance]
+            : [this.frames[0]!, this.frames[1]!];
         return true;
     }
 
@@ -60,6 +65,7 @@ public sealed class CelesteNetIdentityCache
         {
             PlayerGraphicsTypeId => 0,
             PlayerStateTypeId => 1,
+            PlayerFrameTypeId => 2,
             _ => -1,
         };
 }
