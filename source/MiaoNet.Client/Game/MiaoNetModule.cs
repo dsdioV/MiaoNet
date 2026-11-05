@@ -31,6 +31,23 @@ public sealed class MiaoNetModule : EverestModule
     private static bool celesNetBridgeResolved;
     private static MethodInfo? celesNetBridgeSetEnabled;
     private static PropertyInfo? celesNetBridgeInitialized;
+    private static PropertyInfo? celesNetBridgeLocalPort;
+    private static PropertyInfo? celesNetBridgeTargetsBridge;
+
+    /// <summary>
+    /// The loopback port the bridge's local CelesteNet server listens on, or 0 while it is not
+    /// running. MiaoNet points the real client at it when the bridge switch is on.
+    /// </summary>
+    internal static int CelesteNetBridgePort
+        => celesNetBridgeLocalPort?.GetValue(null) is int port ? port : 0;
+
+    /// <summary>
+    /// Whether CelesteNet is currently pointed at the bridge's loopback server. Only such a connection
+    /// belongs to the bridge: one the player pointed somewhere else is theirs, and disconnecting it
+    /// must not turn the switch off.
+    /// </summary>
+    internal static bool IsCelesteNetPointedAtBridge
+        => celesNetBridgeTargetsBridge?.GetValue(null) is true;
 
     /// <summary>Whether the bridge is running, so CelesteNet talks to us instead of to a server.</summary>
     internal static bool IsCelesteNetBridgeActive => celesNetBridgeActive;
@@ -147,14 +164,9 @@ public sealed class MiaoNetModule : EverestModule
 
     private static void TryInitializeCelesteNetBridge()
     {
-        EverestModuleMetadata dependency = new()
+        if (!CelesteNetCompat.IsInstalled)
         {
-            Name = "CelesteNet.Client",
-            Version = new Version(2, 0, 0)
-        };
-        if (!Everest.Loader.DependencyLoaded(dependency))
-        {
-            Logger.Info(LT.MiaoNet, "CelesteNet not installed, bridge inactive");
+            Logger.Info(LT.MiaoNet, "CelesteNet is not installed, compatibility layer inactive");
             return;
         }
 
@@ -188,12 +200,19 @@ public sealed class MiaoNetModule : EverestModule
             celesNetBridgeInitialized = entry?.GetProperty(
                 "Initialized", BindingFlags.Public | BindingFlags.Static
             );
-            if (celesNetBridgeSetEnabled is null || celesNetBridgeInitialized is null)
+            celesNetBridgeLocalPort = entry?.GetProperty(
+                "LocalPort", BindingFlags.Public | BindingFlags.Static
+            );
+            celesNetBridgeTargetsBridge = entry?.GetProperty(
+                "IsCelesteNetPointedAtTheBridge", BindingFlags.Public | BindingFlags.Static
+            );
+            if (celesNetBridgeSetEnabled is null || celesNetBridgeInitialized is null
+                || celesNetBridgeLocalPort is null || celesNetBridgeTargetsBridge is null)
             {
                 Logger.Log(
                     LogLevel.Error, LT.MiaoNet,
                     "CelesteNet bridge entry point is incomplete: CelesteNetBridgeEntry needs public statics " +
-                    "SetEnabled(bool) and Initialized"
+                    "SetEnabled(bool), Initialized, LocalPort and IsCelesteNetPointedAtTheBridge"
                 );
                 return false;
             }
@@ -205,6 +224,41 @@ public sealed class MiaoNetModule : EverestModule
             Logger.Warn(LT.MiaoNet, "Failed to load the CelesteNet bridge: " + e.Message);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Switches the bridge while the game runs. Its NetMod is part of the MiaoNet handshake, so
+    /// registering or unregistering it drops the current connection; the connection is restored here.
+    /// </summary>
+    internal static void ApplyCelesteNetBridgeSetting(bool enabled, bool playerRequested = false)
+    {
+        if (!CelesteNetCompat.IsInstalled || !EnsureCelesteNetBridgeResolved())
+            return;
+
+        // Reading the optional context keeps the switch from building a context of its own. Take the
+        // state before switching: registering or unregistering a NetMod can drop the connection.
+        MiaoNetContext? context = Instance.MiaoNetContextOptional;
+        bool wasConnected = context?.HasConnection ?? false;
+        bool wasConnecting = context is not null && context.HasConnectionOperation && !wasConnected;
+
+        if (enabled)
+        {
+            StartCelesteNetBridge();
+
+            // The bridge identifies CelesteNet players by their MiaoNet identity, so a bridge without
+            // a MiaoNet session cannot accept CelesteNet at all. Switching the bridge on therefore
+            // also brings MiaoNet online, instead of leaving the switch looking like it did nothing.
+            if (playerRequested && !wasConnected && !wasConnecting)
+            {
+                (context ?? Instance.MiaoNetContext).QueueConnect();
+                Logger.Info(LT.MiaoNet, "CelesteNet bridge enabled, connecting MiaoNet to give CelesteNet an identity");
+            }
+        }
+        else
+            StopCelesteNetBridge();
+
+        if (context is not null && !context.HasConnectionOperation && (wasConnected || wasConnecting))
+            context.QueueConnect();
     }
 
     private static void StartCelesteNetBridge()
@@ -422,7 +476,12 @@ public sealed class MiaoNetModule : EverestModule
 
         // update components
         cur.GotoNext(MoveType.After, ins => ins.MatchCall("Monocle.MInput", "Update"));
-        cur.EmitDelegate(static () => Instance.miaoNetContext?.Update());
+        cur.EmitDelegate(static () =>
+        {
+            Instance.miaoNetContext?.Update();
+            CelesteNetCompat.OnFrame();
+            MenuMiaoNetOptions.SyncLiveOptions();
+        });
 
         // update entities even in freeze frames
         cur.GotoNext(MoveType.After, ins => ins.MatchStsfld<Engine>("FreezeTimer"));
@@ -499,13 +558,17 @@ public sealed class MiaoNetModule : EverestModule
         if (!seenOverworld)
         {
             seenOverworld = true;
-            EverestModule? cnet = FindConflictingModule("CelesteNet.Client");
-            EverestModule? mnet = FindConflictingModule("Miao.CelesteNet.Client");
-            if (cnet is not null || mnet is not null)
+            // With the built-in bridge, MiaoNet and CelesteNet coexist; without it they take turns
+            // instead of asking the player to pick one (see CelesteNetCompat). A leftover
+            // compatibility mod that still claims the CelesteNet name conflicts with the bridge.
+            EverestModule? mnet = Everest.Modules.FirstOrDefault(
+                module => module.Metadata.Name == "Miao.CelesteNet.Client"
+            );
+            if (mnet is not null)
             {
                 var u = self.GetUI<OuiConflict>();
                 u.VersionMiaoNet = Instance.Metadata.VersionString;
-                u.VersionCelesteNet = (mnet ?? cnet)!.Metadata.VersionString;
+                u.VersionCelesteNet = mnet.Metadata.VersionString;
                 self.Goto<OuiConflict>();
                 return;
             }
@@ -516,16 +579,6 @@ public sealed class MiaoNetModule : EverestModule
                 self.Add(entity);
             }
         }
-
-        static EverestModule? FindConflictingModule(string name)
-           => Everest.Modules.FirstOrDefault(module => module.Metadata.Name == name && !IsFor(module, name));
-
-        static bool IsFor(EverestModule module, string name)
-           => module.GetType().Assembly
-               .GetCustomAttributes<AssemblyMetadataAttribute>()
-               .Any(attribute =>
-                   attribute.Key == "MiaoNetCompatShim"
-                   && string.Equals(attribute.Value, name, StringComparison.Ordinal));
     }
 
     private static void Level_OnExit(Level level, LevelExit exit, LevelExit.Mode mode, Session session, HiresSnow snow)
