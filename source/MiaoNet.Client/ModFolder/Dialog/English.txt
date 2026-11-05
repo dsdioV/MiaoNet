@@ -32,6 +32,8 @@ miaonet_options_cnet_bridge_tip=
 	When off, CelesteNet is left completely untouched.
 	Either way, the two cannot both be connected at
 	once: connecting one disconnects the other.
+	Warning: this also puts player interactions in CelesteNet's hands.
+	You will not be able to grab players who leave this option off.
 
 miaonet_cnet_took_over_message= CelesteNet connected; MiaoNet disconnected to avoid conflicts.
 miaonet_cnet_bridge_off_message= CelesteNet disconnected; the CelesteNet bridge was turned off.
