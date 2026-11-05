@@ -54,6 +54,12 @@ public sealed class CelesteNetFakeSession : IDisposable {
     /// <summary>Raised for every inbound frame that is not swallowed by the handshake.</summary>
     public event Action<CelesteNetFakeSession, CelesteNetFrame>? FrameReceived;
 
+    /// <summary>
+    /// Raised next to every keepAlive. The bridge has no update loop of its own, and this is the one
+    /// periodic callback it gets, so it doubles as a tick for work that cannot wait for a frame.
+    /// </summary>
+    public event Action<CelesteNetFakeSession>? Heartbeat;
+
     public event Action<CelesteNetFakeSession>? Closed;
 
     internal CelesteNetFakeSession(
@@ -204,6 +210,12 @@ public sealed class CelesteNetFakeSession : IDisposable {
                 return;
             } catch (Exception) {
                 return;
+            }
+
+            try {
+                Heartbeat?.Invoke(this);
+            } catch (Exception e) {
+                Log("heartbeat handler threw: " + e.GetType().Name + ": " + e.Message);
             }
         }
     }
