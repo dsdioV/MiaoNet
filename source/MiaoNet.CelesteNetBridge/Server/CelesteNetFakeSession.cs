@@ -38,6 +38,19 @@ public sealed class CelesteNetFakeSession : IDisposable {
 
     public bool IsClosed => Volatile.Read(ref disposed) != 0;
 
+    /// <summary>
+    /// Whether the identity provider would still give this session the same player id. A forced MiaoNet
+    /// reconnect hands the player a new id, while this session keeps speaking for the old one until the
+    /// real client is made to handshake again.
+    /// </summary>
+    public bool IsIdentityCurrent()
+    {
+        if (options.IdentityProvider is not { } provider)
+            return true;
+
+        return provider() is not { } identity || identity.Id == playerId;
+    }
+
     /// <summary>Raised for every inbound frame that is not swallowed by the handshake.</summary>
     public event Action<CelesteNetFakeSession, CelesteNetFrame>? FrameReceived;
 
