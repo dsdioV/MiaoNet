@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using Celeste.Mod.CelesteNet.Client;
+using Celeste.Mod.CelesteNet.Client.Entities;
 using Celeste.Mod.MiaoNet;
 using MiaoNet.CelesteNetBridge.Protocol;
 using MiaoNet.CelesteNetBridge.Server;
@@ -106,6 +107,9 @@ public static class CelesteNetBridgeEntry {
     private static CelesteNetFakeServer? server;
     private static CelesteNetSuppression? suppress;
 
+    /// <summary>Keeps CelesteNet's tags from drawing while MiaoNet draws the names it would have drawn.</summary>
+    private static CelesteNetNameTagMirror? nameTagMirror;
+
     /// <summary>Whether the bridge switch is on, so its NetMod is declared in the MiaoNet handshake.</summary>
     public static bool Initialized { get; private set; }
 
@@ -156,6 +160,46 @@ public static class CelesteNetBridgeEntry {
             port = 17230;
 
         return true;
+    }
+
+    /// <summary>
+    /// Installs or clears the resolver through which MiaoNet reaches CelesteNet's ghost for a remote
+    /// player. This bridge is the only assembly that may name the CelesteNet type, so MiaoNet asks for
+    /// it at runtime; while the bridge is off the resolver stays null and MiaoNet's own ghost is used.
+    /// </summary>
+    private static void UpdateAnchorResolver() {
+        RemotePlayerAnchor.SetResolver(Engaged ? ResolveRemotePlayerAnchor : null);
+    }
+
+    /// <summary>CelesteNet ghosts by MiaoNet player id, rebuilt at most once per frame.</summary>
+    private static readonly Dictionary<int, Ghost> anchorCache = [];
+
+    /// <summary>Frame the anchor cache was built for; <c>ulong.MaxValue</c> means never.</summary>
+    private static ulong anchorCacheFrame = ulong.MaxValue;
+
+    /// <summary>Level the anchor cache was built from, so a room change inside one frame is noticed.</summary>
+    private static Level? anchorCacheLevel;
+
+    /// <summary>
+    /// Finds the entity CelesteNet currently uses to render a remote player. The ghost is created when
+    /// the player's frames arrive, so this returns null until then; callers ask again.
+    /// MiaoNet asks once per player per frame, so the level is scanned at most once per frame.
+    /// </summary>
+    private static Entity? ResolveRemotePlayerAnchor(int playerId) {
+        if (Engine.Scene is not Level level)
+            return null;
+
+        if (anchorCacheFrame != Engine.FrameCounter || anchorCacheLevel != level) {
+            anchorCacheFrame = Engine.FrameCounter;
+            anchorCacheLevel = level;
+            anchorCache.Clear();
+            foreach (Entity entity in level.Tracker.GetEntities<Ghost>()) {
+                if (entity is Ghost ghost && ghost.PlayerInfo is not null)
+                    anchorCache[(int)ghost.PlayerInfo.ID] = ghost;
+            }
+        }
+
+        return anchorCache.TryGetValue(playerId, out Ghost? cached) ? cached : null;
     }
 
     /// <summary>Turns the bridge on or off at runtime, the way the settings menu does.</summary>
@@ -236,6 +280,9 @@ public static class CelesteNetBridgeEntry {
             );
         }
 
+        nameTagMirror = new();
+        nameTagMirror.Install();
+
         server = new(new CelesteNetFakeServerOptions {
             Logger = message => Logger.Log(LogLevel.Verbose, "cnet-bridge", message),
             IdentityProvider = LocalIdentity,
@@ -246,6 +293,8 @@ public static class CelesteNetBridgeEntry {
             server.Start();
         } catch (Exception e) {
             server = null;
+            nameTagMirror.Uninstall();
+            nameTagMirror = null;
             suppress.Uninstall();
             suppress = null;
             ReportFailure("could not start the local CelesteNet server: " + e.Message);
@@ -253,10 +302,12 @@ public static class CelesteNetBridgeEntry {
         }
 
         Engaged = true;
+        UpdateAnchorResolver();
 
         // Entering a map is when identity replay starts to matter: the request sent while still in the
         // menus had nobody in scope, and a peer may have joined this map while we were away.
         MiaoNetModule.PlayerLocationChanged += OnLocalPlayerLocationChanged;
+        UpdateAnchorResolver();
         Logger.Log(LogLevel.Info, "cnet-bridge",
             $"relaying CelesteNet through 127.0.0.1:{server.Port}"
             + (server.UsedFallbackPort ? " (the default port 17230 was busy)" : "")
@@ -269,6 +320,7 @@ public static class CelesteNetBridgeEntry {
             return;
 
         Engaged = false;
+        UpdateAnchorResolver();
         MiaoNetModule.PlayerLocationChanged -= OnLocalPlayerLocationChanged;
 
         if (watchedContext is not null) {
@@ -302,6 +354,9 @@ public static class CelesteNetBridgeEntry {
         // A pending identity answer belonged to the stream that just went away.
         identityResponsePending = false;
         identityResponseTarget = null;
+
+        nameTagMirror?.Uninstall();
+        nameTagMirror = null;
 
         suppress?.Uninstall();
         suppress = null;
