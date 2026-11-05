@@ -25,15 +25,12 @@
 
     <!-- Suppression hooks detour the real CelesteNet client (installed as a normal mod). -->
     <CelesteModReference Include="CelesteNet.Client" />
-    <!-- A follow-up PR adds the second reference below: the relay filter needs the CelesteNet.Shared
-         assembly to tell CelesteNet's own DataTypes from a mod's.
-         <CelesteModReference Include="CelesteNet.Client" AssemblyName="CelesteNet.Shared" /> -->
+    <!-- DataContext, to tell CelesteNet's own DataTypes from a mod's when deciding what to relay. -->
+    <CelesteModReference Include="CelesteNet.Client" AssemblyName="CelesteNet.Shared" />
 
     <None Include="CelesteMod*" Visible="false" />
   </ItemGroup>
 
-  <!-- A follow-up PR adds the CopyBridgeIntoMiaoNetMod AfterBuild target here: it drops this assembly
-       into source/MiaoNet.Client/ModFolder/Code as Code/MiaoNetCelesteNetBridge.dll, which is where
-       MiaoNet loads it from by reflection. This PR only ships the dependency-free protocol layer. -->
+
   <Import Project="CelesteMod.targets" />
 </Project>
