@@ -32,6 +32,10 @@ miaonet_options_cnet_bridge_tip=
 	Either way, MiaoNet and CelesteNet cannot both be connected at once:
 	connecting one disconnects the other.
 
+miaonet_cnet_took_over_message= CelesteNet connected; MiaoNet disconnected to avoid conflicts.
+miaonet_cnet_bridge_off_message= CelesteNet disconnected; the CelesteNet bridge was turned off.
+miaonet_cnet_waiting_for_miao_message= Waiting for MiaoNet; CelesteNet joins once it is connected.
+
 miaonet_options_visuals= Visuals
 miaonet_options_show_avatar= Show Avatar
 miaonet_options_show_avatar_tip=
