@@ -371,12 +371,12 @@ public sealed class MiaoNetModuleSettings : EverestModuleSettings,
     /// pointed at a loopback server run by MiaoNet, and its frames travel over MiaoNet's NetMod pipe.
     /// Only has an effect when the CelesteNet.Client mod is installed.
     /// <para>
-    /// On by default: most players have CelesteNet installed because a co-op mod needs it, and the
-    /// bridge is what lets that mod work on MiaoNet. Players who want CelesteNet's own servers instead
-    /// can turn it off.
+    /// Off by default: turning it on changes how players interact with each other (CelesteNet takes
+    /// the interactions over, so players who leave this off can no longer be grabbed) and it hides
+    /// CelesteNet's own interface. A setting with a side effect that large is opted into, not assumed.
     /// </para>
     /// </summary>
-    public bool CelesteNetBridgeEnabled { get; set; } = true;
+    public bool CelesteNetBridgeEnabled { get; set; }
 
     #endregion
 

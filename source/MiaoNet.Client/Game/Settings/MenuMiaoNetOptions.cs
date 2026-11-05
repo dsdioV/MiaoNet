@@ -140,6 +140,28 @@ public static class MenuMiaoNetOptions
 
         #endregion
 
+        #region CelesteNet
+
+        EverestModuleMetadata celesteNetDependency = new()
+        {
+            Name = "CelesteNet.Client",
+            Version = new Version(2, 0, 0)
+        };
+        if (Everest.Loader.DependencyLoaded(celesteNetDependency))
+        {
+            item = new TextMenu.SubHeader(Dialog.Get("miaonet_options_cnet_bridge_header"), false);
+            menu.Add(item);
+
+            item = new TextMenu.OnOff(
+                Dialog.Get("miaonet_options_cnet_bridge"),
+                settings.CelesteNetBridgeEnabled
+            ).Change(v => settings.CelesteNetBridgeEnabled = v);
+            menu.Add(item);
+            item.AddDescription(menu, Dialog.Clean("miaonet_options_cnet_bridge_tip"));
+        }
+
+        #endregion
+
         #region Visuals
 
         item = new TextMenu.SubHeader(Dialog.Get("miaonet_options_visuals"), false);
