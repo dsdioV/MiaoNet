@@ -37,8 +37,14 @@ public static class CelesteNetBridgeEntry {
     /// <summary>Remote players already announced to each session.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, HashSet<uint>> introducedPlayers = [];
 
+    /// <summary>Remote type ids already delivered per session, for a log that names each kind once.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, HashSet<string>> deliveredTypes = [];
+
     /// <summary>Remote type ids already skipped per session, so the log names each kind once.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, HashSet<string>> undeliverableTypes = [];
+
+    /// <summary>Ghost-birth gate for every remote player, per session.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, Dictionary<uint, CelesteNetRemoteFeed>> remoteFeeds = [];
 
     /// <summary>Our own identity frames per session, kept for peers who joined after we sent them.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, CelesteNetIdentityCache> localIdentities = [];
@@ -46,8 +52,11 @@ public static class CelesteNetBridgeEntry {
     /// <summary>Whether each session already asked its peers for their identity frames.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, CelesteNetIdentityRequester> identityRequesters = [];
 
-    /// <summary>The MiaoNet context subscribed to for id changes, once one exists.</summary>
-    private static MiaoNetContext? identityContext;
+    /// <summary>The MiaoNet context whose player events are being watched, if any.</summary>
+    private static MiaoNetContext? watchedContext;
+
+    /// <summary>Whether MiaoNet had a connection at the previous heartbeat.</summary>
+    private static bool miaoNetWasConnected;
 
     /// <summary>
     /// Set when a peer asked for our identity before we had both binding frames. The answer follows as
@@ -219,9 +228,13 @@ public static class CelesteNetBridgeEntry {
         Initialized = false;
         MiaoNetModule.PlayerLocationChanged -= OnLocalPlayerLocationChanged;
 
-        if (identityContext is not null) {
-            identityContext.ClientInitialized -= OnMiaoNetClientInitialized;
-            identityContext = null;
+        if (watchedContext is not null) {
+            watchedContext.PlayerLeft -= OnPlayerLeft;
+            watchedContext.PlayerLocationChanged -= OnRemotePlayerLocationChanged;
+            watchedContext.PlayerChannelMoved -= OnRemotePlayerChannelMoved;
+            watchedContext.SelfChannelMoved -= OnSelfChannelMoved;
+            watchedContext.ClientInitialized -= OnMiaoNetClientInitialized;
+            watchedContext = null;
         }
 
         ResetRedirect();
@@ -281,60 +294,80 @@ public static class CelesteNetBridgeEntry {
         lock (sessions) {
             sessions.Add(session);
             relayedTypes[session] = [];
+            deliveredTypes[session] = [];
             introducedPlayers[session] = [];
             undeliverableTypes[session] = [];
             localIdentities[session] = new();
             identityRequesters[session] = new();
+            remoteFeeds[session] = [];
         }
 
         session.FrameReceived += OnLocalFrame;
+        session.Heartbeat += OnSessionHeartbeat;
         session.Closed += OnSessionClosed;
+
+        WatchPlayerLeaves();
     }
 
     private static void OnSessionClosed(CelesteNetFakeSession session) {
         session.FrameReceived -= OnLocalFrame;
+        session.Heartbeat -= OnSessionHeartbeat;
         session.Closed -= OnSessionClosed;
 
         lock (sessions) {
             sessions.Remove(session);
             relayedTypes.Remove(session);
+            deliveredTypes.Remove(session);
             introducedPlayers.Remove(session);
             undeliverableTypes.Remove(session);
             localIdentities.Remove(session);
             identityRequesters.Remove(session);
+            remoteFeeds.Remove(session);
             sendTails.Remove(session);
         }
     }
 
     /// <summary>
-    /// The bridge has no update loop of its own, and the frames the real client keeps sending at tick
-    /// rate are the only periodic callback it gets. Retrying the identity request needs one: MiaoNet
-    /// may come online after the first CelesteNet connection, and a forced reconnect can change our id.
+    /// The bridge has no update loop of its own, and the keepAlive the fake server already sends every
+    /// 250 ms is the only periodic callback it gets. Three things need one: attaching to MiaoNet's
+    /// player list (the context may appear after the first CelesteNet connection), noticing that
+    /// MiaoNet itself went away, and adopting a player id that a forced reconnect changed.
     /// </summary>
-    private static void RefreshIdentityState(CelesteNetFakeSession session) {
-        WatchMiaoNetClientInitialized();
+    private static void OnSessionHeartbeat(CelesteNetFakeSession session) {
+        WatchPlayerLeaves();
         RestartSessionsWithStaleIdentity();
 
-        if (MiaoNetNetMods.IsConnected)
+        bool connected = MiaoNetNetMods.IsConnected;
+        if (miaoNetWasConnected && !connected)
+            AnnounceEveryoneLeft(session);
+
+        if (connected)
             RequestPeersIdentity(session);
+
+        miaoNetWasConnected = connected;
     }
 
     /// <summary>
-    /// Subscribes to MiaoNet's re-initialisation event. Idempotent, because the context is created
-    /// lazily the first time the player uses MiaoNet, which can be later than the first CelesteNet
-    /// connection.
+    /// Subscribes to MiaoNet's player events. Idempotent, because the context is created lazily the
+    /// first time the player uses MiaoNet, which can be later than the first CelesteNet connection.
     /// </summary>
-    private static void WatchMiaoNetClientInitialized() {
-        if (identityContext is not null)
+    private static void WatchPlayerLeaves() {
+        if (watchedContext is not null)
             return;
 
         MiaoNetContext? context = MiaoNetModule.Instance?.MiaoNetContextOptional;
         if (context is null)
             return;
 
+        context.PlayerLeft += OnPlayerLeft;
+        // A player who changes room or channel stops sending frames to our map, and CelesteNet's
+        // ghost has no timeout: without a leave it would freeze at its last position, nameless.
+        context.PlayerLocationChanged += OnRemotePlayerLocationChanged;
+        context.PlayerChannelMoved += OnRemotePlayerChannelMoved;
+        context.SelfChannelMoved += OnSelfChannelMoved;
         // A reconnect can assign a new MiaoNet player id; the real client cannot adopt it in place.
         context.ClientInitialized += OnMiaoNetClientInitialized;
-        identityContext = context;
+        watchedContext = context;
     }
 
     /// <summary>
@@ -372,8 +405,6 @@ public static class CelesteNetBridgeEntry {
     /// playerInfo here is its own record; a remote player's record never comes this way.
     /// </summary>
     private static void OnLocalFrame(CelesteNetFakeSession session, CelesteNetFrame frame) {
-        RefreshIdentityState(session);
-
         if (frame.TypeId is not { } typeId)
             return;
 
@@ -446,6 +477,13 @@ public static class CelesteNetBridgeEntry {
             if (session.PlayerId == sender)
                 continue;
 
+            if (!session.IsHandshaken) {
+                // The client takes the first DataPlayerInfo it receives as itself, and its reference
+                // table is not built before the startup sequence is through; inject nothing yet.
+                ReportSkip(session, typeId ?? "<unparsed>", "the local client is still connecting");
+                continue;
+            }
+
             if (typeId == CelesteNetIdentityCache.PlayerInfoTypeId) {
                 // A peer answers an identity request with its own record, but the real client takes the
                 // first DataPlayerInfo it ever sees as itself. Every remote record the client needs is
@@ -461,18 +499,52 @@ public static class CelesteNetBridgeEntry {
                 continue;
             }
 
-            bool first;
-            lock (sessions)
-                first = introducedPlayers[session].Add(sender);
-
-            if (first) {
+            if (IntroducePlayer(session, sender)) {
                 // The real client can only resolve refs to a player it has seen a DataPlayerInfo for.
                 string name = RemoteName(sender);
                 QueueSend(session, CelesteNetDataTypes.PlayerInfo(sender, name));
                 Logger.Log(LogLevel.Verbose, "cnet-bridge", $"announce remote #{sender} as {name}");
             }
 
+            if (FeedOf(session, sender) is not { } feed)
+                continue;
+
+            bool wasHolding = feed.HasHeldFrame;
+            CelesteNetRemoteFeedAction action = feed.Accept(typeId!, packet.Payload);
+            if (action == CelesteNetRemoteFeedAction.Hold) {
+                if (!wasHolding) {
+                    Logger.Log(
+                        LogLevel.Verbose, "cnet-bridge",
+                        $"hold playerFrame from #{sender} until its graphics and state arrive"
+                    );
+                }
+                continue;
+            }
+
             QueueSend(session, CelesteNetFrameRewriter.RewriteSource(packet.Payload, sender));
+            ReportDelivered(session, typeId!, sender, packet.Payload.Length);
+
+            // The gate holds player frames until graphics and state are through; now that one of them
+            // just went out, the newest held frame can follow. It is queued behind them, never before.
+            if (feed.TakeHeldFrame() is { } held) {
+                QueueSend(session, CelesteNetFrameRewriter.RewriteSource(held, sender));
+                ReportDelivered(session, CelesteNetRemoteFeed.PlayerFrameTypeId, sender, held.Length);
+            }
+        }
+    }
+
+    private static bool IntroducePlayer(CelesteNetFakeSession session, uint id) {
+        lock (sessions)
+            return introducedPlayers.TryGetValue(session, out HashSet<uint>? introduced) && introduced.Add(id);
+    }
+
+    private static CelesteNetRemoteFeed? FeedOf(CelesteNetFakeSession session, uint id) {
+        lock (sessions) {
+            if (!remoteFeeds.TryGetValue(session, out Dictionary<uint, CelesteNetRemoteFeed>? feeds))
+                return null;
+            if (!feeds.TryGetValue(id, out CelesteNetRemoteFeed? feed))
+                feeds[id] = feed = new();
+            return feed;
         }
     }
 
@@ -589,10 +661,135 @@ public static class CelesteNetBridgeEntry {
         return true;
     }
 
-    private static void ReportSkip(CelesteNetFakeSession session, string typeId, string reason) {
+    /// <summary>
+    /// A player leaving MiaoNet has to leave CelesteNet as well: the client only drops a player when it
+    /// receives a dead <c>playerInfo</c>, and every mod that keys data by player id (CoopHelper, the
+    /// appearance mods) would otherwise keep a player that is never coming back.
+    /// </summary>
+    private static void OnPlayerLeft(OnlinePlayer player) {
+        uint id = (uint)player.ID;
+
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets) {
+            if (!ForgetIntroduced(session, id))
+                continue;
+
+            ForgetFeed(session, id);
+            if (session.IsHandshaken)
+                QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
+
+            Logger.Log(LogLevel.Verbose, "cnet-bridge", $"announced that #{id} left CelesteNet");
+        }
+    }
+
+    /// <summary>
+    /// Without a MiaoNet connection this side cannot hear from anybody any more, so every player the
+    /// local client knows about is gone as far as it is concerned.
+    /// </summary>
+    private static void AnnounceEveryoneLeft(CelesteNetFakeSession session) {
+        uint[] ids;
+        lock (sessions) {
+            if (!introducedPlayers.TryGetValue(session, out HashSet<uint>? introduced))
+                return;
+
+            ids = [.. introduced];
+            introduced.Clear();
+            if (remoteFeeds.TryGetValue(session, out Dictionary<uint, CelesteNetRemoteFeed>? feeds))
+                feeds.Clear();
+        }
+
+        foreach (uint id in ids) {
+            if (session.IsHandshaken)
+                QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
+        }
+
+        if (ids.Length > 0)
+            Logger.Log(LogLevel.Info, "cnet-bridge", $"MiaoNet went away, announced {ids.Length} players as left");
+    }
+
+    /// <summary>
+    /// Changing room or channel means the player's frames stop reaching our map, while CelesteNet keeps
+    /// a ghost forever: announce the leave so the body goes away instead of freezing in place.
+    /// </summary>
+    private static void OnRemotePlayerLocationChanged(OnlinePlayer player, PacketPlayerLocationChangedNotification packet)
+        => LeaveCelesteNetIfOutsideOurMap(player);
+
+    private static void OnRemotePlayerChannelMoved(OnlinePlayer player, PacketPlayerChannelMovedNotification packet)
+        => LeaveCelesteNetIfOutsideOurMap(player);
+
+    /// <summary>Our own channel move drops every CelesteNet player; the next frames re-introduce them.</summary>
+    private static void OnSelfChannelMoved(PacketPlayerChannelMovedResponse response) {
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets)
+            AnnounceEveryoneLeft(session);
+    }
+
+    private static void LeaveCelesteNetIfOutsideOurMap(OnlinePlayer player) {
+        if (IsSharingOurMap(player))
+            return;
+
+        uint id = (uint)player.ID;
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets) {
+            if (!ForgetIntroduced(session, id))
+                continue;
+
+            ForgetFeed(session, id);
+            if (session.IsHandshaken)
+                QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
+        }
+
+        Logger.Log(LogLevel.Verbose, "cnet-bridge", $"#{id} left our map, announced them as gone");
+    }
+
+    private static bool IsSharingOurMap(OnlinePlayer player) {
+        ClientState? state = watchedContext?.ClientState;
+        if (state is null)
+            return false;
+
+        return player.Location.IsInMap
+            && state.Self.Location.IsInMap
+            && player.Location.Map.Equals(state.Self.Location.Map);
+    }
+
+    private static void ForgetFeed(CelesteNetFakeSession session, uint id) {
+        lock (sessions)
+            if (remoteFeeds.TryGetValue(session, out Dictionary<uint, CelesteNetRemoteFeed>? feeds))
+                feeds.Remove(id);
+    }
+
+    private static bool ForgetIntroduced(CelesteNetFakeSession session, uint id) {
+        lock (sessions)
+            return introducedPlayers.TryGetValue(session, out HashSet<uint>? introduced) && introduced.Remove(id);
+    }
+
+    private static void ReportDelivered(CelesteNetFakeSession session, string typeId, uint sender, int bytes) {
         bool first;
         lock (sessions)
-            first = undeliverableTypes.TryGetValue(session, out HashSet<string>? seen) && seen.Add(typeId);
+            first = deliveredTypes.TryGetValue(session, out HashSet<string>? seen) && seen.Add(typeId);
+
+        if (first) {
+            Logger.Log(
+                LogLevel.Verbose, "cnet-bridge",
+                $"deliver {typeId} from #{sender} ({bytes} B)"
+            );
+        }
+    }
+
+    private static void ReportSkip(CelesteNetFakeSession session, string typeId, string reason) {
+        string key = typeId + " (" + reason + ")";
+        bool first;
+        lock (sessions)
+            first = undeliverableTypes.TryGetValue(session, out HashSet<string>? seen) && seen.Add(key);
 
         if (first) {
             Logger.Log(
