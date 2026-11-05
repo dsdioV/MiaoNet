@@ -109,6 +109,7 @@ public static class CelesteNetBridgeEntry {
         Initialized = true;
         Logger.Log(LogLevel.Info, "cnet-bridge",
             $"relaying CelesteNet through 127.0.0.1:{server.Port}"
+            + (server.UsedFallbackPort ? " (the default port 17230 was busy)" : "")
         );
     }
 
