@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using MiaoNet.CelesteNetBridge.Protocol;
@@ -148,6 +149,71 @@ public class CelesteNetFakeServerTests {
 
         Assert.AreEqual(0, read, "the connection must be closed instead of served under a made-up id");
         Assert.AreEqual(0, sessions, "no session may start when there is no identity to give it");
+    }
+
+    [TestMethod]
+    public async Task AChangedMiaoNetIdentityMakesTheOldSessionStale()
+    {
+        uint currentId = 1;
+        using CelesteNetFakeServer server = new(new CelesteNetFakeServerOptions {
+            Port = 0,
+            KeepAliveInterval = TimeSpan.FromMilliseconds(100),
+            IdentityProvider = () => (currentId, "Player"),
+        });
+
+        List<CelesteNetFakeSession> started = [];
+        server.SessionStarted += session =>
+        {
+            lock (started)
+                started.Add(session);
+        };
+        server.Start();
+
+        using (CelesteNetTestClient first = new(server.Port)) {
+            await first.HandshakeAsync();
+            for (int i = 0; i < 4; i++)
+                await first.ReceiveAsync();
+
+            CelesteNetFakeSession oldSession = await WaitForSessionAsync(started, 0);
+            Assert.AreEqual(1u, oldSession.PlayerId);
+            Assert.IsTrue(oldSession.IsIdentityCurrent(), "the session still speaks for the id it was given");
+
+            currentId = 2;
+            Assert.IsFalse(
+                oldSession.IsIdentityCurrent(),
+                "a forced MiaoNet reconnect gives the player a new id; the old session must be restarted"
+            );
+        }
+
+        // The client handshakes again (CelesteNet's auto-reconnect does this in the game).
+        using CelesteNetTestClient second = new(server.Port);
+        await second.HandshakeAsync();
+        for (int i = 0; i < 2; i++)
+            await second.ReceiveAsync();
+        byte[] playerInfo = await second.ReceiveAsync();
+
+        Assert.AreEqual("playerInfo", CelesteNetTypeReader.TryReadTypeId(playerInfo));
+        CollectionAssert.AreEqual(CelesteNetDataTypes.PlayerInfo(2, "Player"), playerInfo);
+
+        CelesteNetFakeSession newSession = await WaitForSessionAsync(started, 1);
+        Assert.AreEqual(2u, newSession.PlayerId);
+        Assert.IsTrue(newSession.IsIdentityCurrent());
+    }
+
+    private static async Task<CelesteNetFakeSession> WaitForSessionAsync(
+        List<CelesteNetFakeSession> sessions, int index
+    )
+    {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            lock (sessions) {
+                if (sessions.Count > index)
+                    return sessions[index];
+            }
+
+            await Task.Delay(20);
+        }
+
+        throw new AssertFailedException("the session did not start in time");
     }
 
     [TestMethod]
