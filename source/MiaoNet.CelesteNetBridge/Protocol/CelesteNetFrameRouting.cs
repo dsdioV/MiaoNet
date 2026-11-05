@@ -12,8 +12,14 @@ public enum CelesteNetFrameLane : byte
     /// <summary>Send it on the legacy bridge NetMod, where every peer can receive it.</summary>
     ThirdParty = 1,
 
-    /// <summary>Send it on the player stream this client declares.</summary>
+    /// <summary>Send it on the sender's own player stream.</summary>
     PlayerStream = 2,
+
+    /// <summary>
+    /// Do not send this frame itself: the synthesis stream carries one appearance keyframe when the
+    /// appearance changes, not the whole per-tick frame stream.
+    /// </summary>
+    AppearanceKeyframe = 3,
 }
 
 /// <summary>
@@ -52,7 +58,8 @@ public static class CelesteNetFrameRouting
         string typeId,
         string? declaringSource,
         bool aboutLocalPlayer
-    ) {
+    )
+    {
         ArgumentNullException.ThrowIfNull(typeId);
 
         if (!CelesteNetRelayFilter.IsRelayable(typeId, declaringSource, aboutLocalPlayer))
@@ -61,8 +68,12 @@ public static class CelesteNetFrameRouting
         bool thirdParty = declaringSource is null
             || !CelesteNetRelayFilter.UpstreamSources.Contains(declaringSource);
 
-        return thirdParty || !PlayerStreamTypeIds.Contains(typeId)
-            ? CelesteNetFrameLane.ThirdParty
+        if (thirdParty || !PlayerStreamTypeIds.Contains(typeId))
+            return CelesteNetFrameLane.ThirdParty;
+
+        return string.Equals(typeId, CelesteNetPlayerFrame.TypeId, StringComparison.Ordinal)
+            ? CelesteNetFrameLane.AppearanceKeyframe
             : CelesteNetFrameLane.PlayerStream;
     }
 }
+

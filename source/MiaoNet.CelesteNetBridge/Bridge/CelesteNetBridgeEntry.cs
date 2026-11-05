@@ -84,7 +84,10 @@ public static class CelesteNetBridgeEntry {
     /// <summary>The stream a pending identity answer has to go back on.</summary>
     private static NetMod? identityResponseTarget;
 
-    /// <summary>Per-session synthesised frame state: animation table, tombstones and pending frames.</summary>
+    /// <summary>Players whose appearance keyframe was already logged, per session.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, HashSet<uint>> appearanceKeyframesLogged = [];
+
+    /// <summary>Per-session synthesised frame state: appearance, animation table, tombstones and pending frames.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, CelesteNetFrameSynthesizer> synthesizers = [];
 
     /// <summary>Players whose first synthesised frame was logged per session, so the log names each once.</summary>
@@ -92,6 +95,9 @@ public static class CelesteNetBridgeEntry {
 
     /// <summary>Set after an encoding failure so the log names it once, not every tick.</summary>
     private static bool synthesisEncodeFailureLogged;
+
+    /// <summary>Set after an appearance keyframe failed to encode, so the log names it once.</summary>
+    private static bool appearanceEncodeFailureLogged;
 
     /// <summary>
     /// Tail of the send chain of each session. Every bridge frame goes through it, so the real client
@@ -385,11 +391,13 @@ public static class CelesteNetBridgeEntry {
             peers.Clear();
             synthesizers.Clear();
             synthesisLogged.Clear();
+            appearanceKeyframesLogged.Clear();
         }
 
         identityResponseTarget = null;
         baseIdentityRequestLogged = false;
         synthesisEncodeFailureLogged = false;
+        appearanceEncodeFailureLogged = false;
 
         nameTagMirror?.Uninstall();
         nameTagMirror = null;
@@ -456,6 +464,7 @@ public static class CelesteNetBridgeEntry {
             peers[session] = new();
             synthesizers[session] = new();
             synthesisLogged[session] = [];
+            appearanceKeyframesLogged[session] = [];
         }
 
         session.FrameReceived += OnLocalFrame;
@@ -482,6 +491,7 @@ public static class CelesteNetBridgeEntry {
             peers.Remove(session);
             synthesizers.Remove(session);
             synthesisLogged.Remove(session);
+            appearanceKeyframesLogged.Remove(session);
             sendTails.Remove(session);
         }
     }
@@ -598,7 +608,8 @@ public static class CelesteNetBridgeEntry {
 
     /// <summary>
     /// The local real client sent something. Third-party payloads go to the legacy bridge stream;
-    /// player-pipeline payloads go to the one player stream this client declares.
+    /// player-pipeline payloads go to the one player stream this client declares, which carries only
+    /// appearance keyframes of its own frames.
     /// </summary>
     private static void OnLocalFrame(CelesteNetFakeSession session, CelesteNetFrame frame) {
         if (frame.TypeId is not { } typeId)
@@ -612,8 +623,14 @@ public static class CelesteNetBridgeEntry {
             typeId, source, aboutLocalPlayer: true
         );
 
-        if (lane == CelesteNetFrameLane.Drop)
-            return;
+        switch (lane) {
+            case CelesteNetFrameLane.Drop:
+                return;
+
+            case CelesteNetFrameLane.AppearanceKeyframe:
+                SendAppearanceKeyframe(session, frame.Payload);
+                return;
+        }
 
         if (lane == CelesteNetFrameLane.ThirdParty && CelesteNetFrameMeta.CarriesBoundRef(frame.Payload))
             ownBoundRefs.Remember(typeId, frame.Payload);
@@ -643,6 +660,80 @@ public static class CelesteNetBridgeEntry {
             );
         } catch (Exception e) {
             Logger.Log(LogLevel.Warn, "cnet-bridge", "send failed: " + e.GetType().Name + ": " + e.Message);
+        }
+    }
+
+    /// <summary>
+    /// A synthesis client does not send its per-tick frames. It sends a real frame only when the
+    /// appearance projection changed, at most once every
+    /// <see cref="CelesteNetFrameSynthesizer.AppearanceKeyframeMinIntervalSeconds"/> per player.
+    /// </summary>
+    private static void SendAppearanceKeyframe(CelesteNetFakeSession session, byte[] payload) {
+        if (playerStreamMod is null || !MiaoNetNetMods.IsConnected)
+            return;
+
+        if (!CelesteNetPlayerFrame.TryDecode(payload, out CelesteNetPlayerFrame? appearance))
+            return;
+
+        double now = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        CelesteNetPlayerFrame? appearanceToSend = null;
+        foreach (CelesteNetFakeSession targetSession in targets) {
+            CelesteNetFrameSynthesizer? synthesizer = SynthesisOf(targetSession);
+            if (synthesizer is null)
+                continue;
+
+            // Only the local player's own appearance is fed in: the keyframe is about our frames.
+            synthesizer.AcceptAppearance(targetSession.PlayerId, appearance);
+            if (synthesizer.TryTakeAppearanceKeyframe(targetSession.PlayerId, now, out CelesteNetPlayerFrame? taken))
+                appearanceToSend ??= taken;
+        }
+
+        if (appearanceToSend is null)
+            return;
+
+        byte[] encoded;
+        try {
+            encoded = CelesteNetPlayerFrame.Encode(appearanceToSend);
+        } catch (Exception e) {
+            // A malformed real frame must not escape into MiaoNet's frame loop, which would treat it as
+            // a connection failure and disconnect the player from MiaoNet.
+            if (!appearanceEncodeFailureLogged) {
+                appearanceEncodeFailureLogged = true;
+                Logger.Log(
+                    LogLevel.Warn, "cnet-bridge",
+                    "could not encode an appearance keyframe; skipping it: "
+                    + e.GetType().Name + ": " + e.Message
+                );
+            }
+            return;
+        }
+
+        try {
+            playerStreamMod.Send(new PacketBridgeFrame(encoded));
+            LogAppearanceKeyframe(session, appearanceToSend.PlayerID, encoded.Length);
+        } catch (Exception e) {
+            Logger.Log(
+                LogLevel.Warn, "cnet-bridge",
+                "appearance keyframe send failed: " + e.GetType().Name + ": " + e.Message
+            );
+        }
+    }
+
+    private static void LogAppearanceKeyframe(CelesteNetFakeSession session, uint id, int bytes) {
+        bool first;
+        lock (sessions)
+            first = appearanceKeyframesLogged.TryGetValue(session, out HashSet<uint>? seen) && seen.Add(id);
+
+        if (first) {
+            Logger.Log(
+                LogLevel.Verbose, "cnet-bridge",
+                $"sent appearance keyframe #{id} on {playerStreamMod?.Name} ({bytes} B)"
+            );
         }
     }
 
@@ -723,6 +814,9 @@ public static class CelesteNetBridgeEntry {
             if (typeId == CelesteNetRemoteFeed.PlayerGraphicsTypeId) {
                 RememberSynthesisedGraphics(session, sender, packet.Payload);
             } else if (typeId == CelesteNetRemoteFeed.PlayerFrameTypeId) {
+                if (CelesteNetPlayerFrame.TryDecode(packet.Payload, out CelesteNetPlayerFrame? appearance))
+                    RememberSynthesisedAppearance(session, sender, appearance);
+
                 // The local client is given a frame built from MiaoNet's player data from now on.
                 ReportSkip(session, typeId, "synthesised locally");
                 continue;
@@ -808,6 +902,9 @@ public static class CelesteNetBridgeEntry {
         // Frames captured in the room we left would arrive in the new one with the wrong position,
         // and the speed baseline belongs to the old level.
         ResetSynthesisedFrames();
+
+        // A peer may have joined our new map without our appearance changing; resend it once.
+        MarkSynthesisedAppearancesPending();
     }
 
     /// <summary>Keeps the newest copy of one of our own identity frames, for peers that join later.</summary>
@@ -897,9 +994,10 @@ public static class CelesteNetBridgeEntry {
     }
 
     /// <summary>
-    /// Sends playerGraphics and playerState in that order, the order the real client can bind them in.
-    /// The player's playerInfo is never part of the answer; receivers synthesise it from MiaoNet's own
-    /// data. Returns false while either binding frame is still unknown.
+    /// Sends playerGraphics and playerState in that order, then the appearance keyframe when one is
+    /// known: the order the real client can bind them in. The player's playerInfo is never part of the
+    /// answer; receivers synthesise it from MiaoNet's own data. Returns false while either binding frame
+    /// is still unknown.
     /// </summary>
     private static bool TryAnswerIdentityRequest(NetMod target) {
         if (!MiaoNetNetMods.IsConnected)
@@ -1273,6 +1371,14 @@ public static class CelesteNetBridgeEntry {
         }
     }
 
+    private static void RememberSynthesisedAppearance(
+        CelesteNetFakeSession session, uint id, CelesteNetPlayerFrame appearance
+    ) {
+        CelesteNetFrameSynthesizer? synthesizer = SynthesisOf(session);
+        if (synthesizer is not null && !synthesizer.IsTombstoned(id))
+            synthesizer.AcceptAppearance(id, appearance);
+    }
+
     private static void RememberSynthesisedGraphics(CelesteNetFakeSession session, uint id, byte[] payload) {
         CelesteNetFrameSynthesizer? synthesizer = SynthesisOf(session);
         if (synthesizer is null || synthesizer.IsTombstoned(id))
@@ -1324,6 +1430,16 @@ public static class CelesteNetBridgeEntry {
                 synthesizer.ResetTransientState();
             }
         }
+    }
+
+    /// <summary>
+    /// Marks every known appearance as due again, so entering a map resends the keyframe even when the
+    /// player's appearance did not change while they were away.
+    /// </summary>
+    private static void MarkSynthesisedAppearancesPending() {
+        lock (sessions)
+            foreach (CelesteNetFrameSynthesizer synthesizer in synthesizers.Values)
+                synthesizer.MarkAppearanceKeyframesPending();
     }
 
     /// <summary>
