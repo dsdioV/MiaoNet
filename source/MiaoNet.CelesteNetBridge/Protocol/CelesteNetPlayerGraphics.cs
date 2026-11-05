@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 
 namespace MiaoNet.CelesteNetBridge.Protocol;
 
@@ -9,7 +10,7 @@ namespace MiaoNet.CelesteNetBridge.Protocol;
 /// <para>
 /// The bridge keeps relaying <c>playerGraphics</c> verbatim: it carries the sender's real sprite
 /// animation table, hair count, hair textures and depth, which MiaoNet's own data plane does not
-/// have. The rebuilt <c>playerFrame</c> only needs a small projection of it, so this reader skips
+/// have. The synthesised <c>playerFrame</c> only needs a small projection of it, so this reader skips
 /// the metas and the fields the frame does not use instead of mirroring the whole DataType.
 /// </para>
 /// <para>
@@ -61,8 +62,9 @@ public sealed class CelesteNetPlayerGraphics
             graphics = DecodeBody(CelesteNetPayload.SplitBody(payload, TypeId));
             return true;
         }
-        catch (InvalidDataException)
+        catch (Exception e) when (e is InvalidDataException or DecoderFallbackException)
         {
+            // Malformed strings must degrade to "do not handle this frame", not escape the handler.
             return false;
         }
     }
