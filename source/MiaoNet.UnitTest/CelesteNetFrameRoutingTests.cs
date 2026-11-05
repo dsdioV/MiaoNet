@@ -65,9 +65,14 @@ public sealed class CelesteNetFrameRoutingTests
         {
             // A playerInfo about us is session state; a remote player's record has to travel.
             bool aboutLocalPlayer = typeId != "playerInfo";
+            CelesteNetFrameLane expected = string.Equals(
+                typeId, CelesteNetPlayerFrame.TypeId, StringComparison.Ordinal
+            )
+                ? CelesteNetFrameLane.AppearanceKeyframe
+                : CelesteNetFrameLane.PlayerStream;
 
             Assert.AreEqual(
-                CelesteNetFrameLane.PlayerStream,
+                expected,
                 CelesteNetFrameRouting.Classify(typeId, Shared, aboutLocalPlayer),
                 typeId
             );
