@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 using MiaoNet.CelesteNetBridge.Protocol;
 using MiaoNet.Shared;
 
@@ -14,6 +16,10 @@ namespace MiaoNet.CelesteNetBridge.Server;
 /// Everything that is per-player state lives here:
 /// </para>
 /// <list type="bullet">
+/// <item>the appearance template, taken from the newest real <c>playerFrame</c> (hair colors, hair
+/// texture, sprite tint, follower and held-item styling) and re-applied to every synthesised frame;</item>
+/// <item>the appearance projection and its keyframe flag: a real frame whose projection changed is kept
+/// as the one frame worth forwarding to synthesising peers, instead of the whole per-tick stream;</item>
 /// <item>the animation table from the relayed <c>playerGraphics</c>, which turns MiaoNet's animation
 /// names into the indices CelesteNet's ghost expects;</item>
 /// <item>death, dash and speed state that MiaoNet's deltas do not carry per frame;</item>
@@ -47,6 +53,13 @@ public sealed class CelesteNetFrameSynthesizer
     /// <summary>Depth CelesteNet gives a follow/hold entity whose real one is unknown.</summary>
     private const int FallbackEntityDepth = -1000000;
 
+    /// <summary>
+    /// At most one appearance keyframe per player per this many seconds. Without a limit, a skin mod
+    /// that changes hair colors every frame would turn the synthesis stream back into the full frame
+    /// stream this design exists to avoid.
+    /// </summary>
+    public const double AppearanceKeyframeMinIntervalSeconds = 0.25;
+
     // MiaoNet's default hair palette (PlayerGraphicsInfo.Default): the only source when no real frame
     // has arrived yet. Lengths match PlayerGraphicsInfo.GetHairInfo; above two dashes it is dash two.
     private static readonly CelesteNetColor Dash0HairColor = new(0x44, 0xB7, 0xFF);
@@ -58,6 +71,38 @@ public sealed class CelesteNetFrameSynthesizer
     private readonly Dictionary<uint, PendingInput> pending = [];
     private readonly HashSet<uint> tombstoned = [];
 
+    /// <summary>
+    /// Records a real frame from <paramref name="playerID"/>. Its appearance projection becomes the
+    /// template for synthesised frames, and a changed projection becomes the player's appearance
+    /// keyframe.
+    /// </summary>
+    /// <remarks>
+    /// A frame whose projection is unchanged is ignored: position, scale, facing, animation, speed and
+    /// death are taken from MiaoNet every tick anyway, so there is no reason to churn the template or
+    /// queue a keyframe for them.
+    /// </remarks>
+    public void AcceptAppearance(uint playerID, CelesteNetPlayerFrame appearance)
+    {
+        ArgumentNullException.ThrowIfNull(appearance);
+
+        // The ref in the frame has to name the same player; a mismatch would style the wrong ghost.
+        if (appearance.PlayerID != playerID || tombstoned.Contains(playerID))
+        {
+            return;
+        }
+
+        PlayerState state = GetState(playerID);
+        AppearanceProjection projection = new(appearance);
+        if (state.Appearance is not null && state.Projection is { } previous && previous.Matches(projection))
+        {
+            return;
+        }
+
+        state.Appearance = appearance;
+        state.Projection = projection;
+        state.AppearanceKeyframePending = true;
+    }
+
     /// <summary>Records the newest relayed <c>playerGraphics</c>, which carries the animation table.</summary>
     public void AcceptGraphics(uint playerID, CelesteNetPlayerGraphics graphics)
     {
@@ -68,6 +113,72 @@ public sealed class CelesteNetFrameSynthesizer
         }
 
         GetState(playerID).Graphics = graphics;
+    }
+
+    /// <summary>
+    /// Hands out the appearance keyframe only when the per-player rate limit allows it. A change that
+    /// arrives too soon stays pending, so the latest appearance is sent once the interval has passed.
+    /// </summary>
+    /// <param name="playerID">The player whose appearance should be sent.</param>
+    /// <param name="nowSeconds">A monotonic timestamp in seconds; the bridge passes the process uptime.</param>
+    /// <param name="appearance">The frame to send, when one is due.</param>
+    public bool TryTakeAppearanceKeyframe(
+        uint playerID,
+        double nowSeconds,
+        [NotNullWhen(true)] out CelesteNetPlayerFrame? appearance
+    )
+        => TryTakeAppearanceKeyframe(
+            playerID, nowSeconds, AppearanceKeyframeMinIntervalSeconds, out appearance
+        );
+
+    /// <summary>
+    /// Hands out the appearance keyframe if the change is older than <paramref name="minIntervalSeconds"/>.
+    /// The first frame of a player is always due: the peer has no appearance for them yet.
+    /// </summary>
+    public bool TryTakeAppearanceKeyframe(
+        uint playerID,
+        double nowSeconds,
+        double minIntervalSeconds,
+        [NotNullWhen(true)] out CelesteNetPlayerFrame? appearance
+    )
+    {
+        appearance = null;
+        if (!players.TryGetValue(playerID, out PlayerState? state)
+            || !state.AppearanceKeyframePending
+            || state.Appearance is null) {
+            return false;
+        }
+
+        if (state.LastAppearanceKeyframeSeconds is double last
+            && nowSeconds - last < minIntervalSeconds) {
+            return false;
+        }
+
+        state.LastAppearanceKeyframeSeconds = nowSeconds;
+        state.AppearanceKeyframePending = false;
+        appearance = state.Appearance;
+        return true;
+    }
+
+    /// <summary>Whether the player's appearance changed since the last keyframe was taken.</summary>
+    public bool IsAppearanceKeyframePending(uint playerID)
+        => players.TryGetValue(playerID, out PlayerState? state)
+            && state.AppearanceKeyframePending
+            && state.Appearance is not null;
+
+    /// <summary>
+    /// Marks every known appearance as due once more. A level entry resends appearance even when it did
+    /// not change: a peer may have joined while our client had nothing new to show.
+    /// </summary>
+    public void MarkAppearanceKeyframesPending()
+    {
+        foreach (PlayerState state in players.Values)
+        {
+            if (state.Appearance is not null)
+            {
+                state.AppearanceKeyframePending = true;
+            }
+        }
     }
 
     /// <summary>
@@ -177,7 +288,8 @@ public sealed class CelesteNetFrameSynthesizer
     public void ClearPending() => pending.Clear();
 
     /// <summary>
-    /// Forgets speed, dash and death state for every player, for level and map changes.
+    /// Forgets speed, dash and death state for every player, for level and map changes. The appearance
+    /// template and a pending appearance keyframe are deliberately kept: the player did not change.
     /// </summary>
     public void ResetTransientState()
     {
@@ -189,7 +301,7 @@ public sealed class CelesteNetFrameSynthesizer
 
     /// <summary>
     /// Forgets speed, dash and death state for one player, and drops a frame captured in the room it
-    /// just left. Called when a remote player changes room inside our map.
+    /// just left. Called when a remote player changes room inside our map. Appearance is kept.
     /// </summary>
     public void ResetTransientState(uint playerID)
     {
@@ -221,6 +333,7 @@ public sealed class CelesteNetFrameSynthesizer
     private CelesteNetPlayerFrame Build(uint playerID, CelesteNetPlayerFrameInput input)
     {
         PlayerState state = GetState(playerID);
+        CelesteNetPlayerFrame? appearance = state.Appearance;
         CelesteNetPlayerGraphics? graphics = state.Graphics;
 
         UpdateDash(state, input);
@@ -228,17 +341,6 @@ public sealed class CelesteNetFrameSynthesizer
         float speedY = 0f;
         UpdateSpeed(state, input, ref speedX, ref speedY);
         (CelesteNetColor hairColor, int hairLength) = HairPalette(input.Dashes, input.StarFlying);
-
-        int hairCount = graphics?.HairCount ?? 0;
-        if (hairCount <= 0)
-        {
-            hairCount = hairLength;
-        }
-
-        // No appearance template has arrived yet: use MiaoNet's default palette for the current dash
-        // count until the next real frame corrects it.
-        CelesteNetColor[] hairColors = new CelesteNetColor[hairCount];
-        Array.Fill(hairColors, hairColor);
 
         return new() {
             PlayerID = playerID,
@@ -248,15 +350,15 @@ public sealed class CelesteNetFrameSynthesizer
             ScaleY = input.ScaleY,
             FacingLeft = input.FacingLeft,
             HairSimulateMotion = input.HairSimulateMotion,
-            Color = CelesteNetColor.White,
+            Color = appearance?.Color ?? CelesteNetColor.White,
             SpeedX = speedX,
             SpeedY = speedY,
             AnimationID = ResolveAnimationID(graphics, input.AnimationName),
             AnimationFrame = input.AnimationFrame,
-            HairColors = hairColors,
-            HairTexture0 = ResolveHairTexture0(graphics),
-            Followers = ResolveFollowers(input.Followers),
-            Holding = ResolveHolding(input.Holdable),
+            HairColors = ResolveHairColors(appearance, graphics, hairColor, hairLength),
+            HairTexture0 = ResolveHairTexture0(appearance, graphics),
+            Followers = ResolveFollowers(appearance, input.Followers),
+            Holding = ResolveHolding(appearance, input.Holdable),
             Dashing = input.Dashing,
             DashWasB = input.Dashing && state.DashWasB,
             DashDirection = input.Dashing ? input.DashDirection : (byte)0,
@@ -325,8 +427,39 @@ public sealed class CelesteNetFrameSynthesizer
         return -1;
     }
 
-    private static string ResolveHairTexture0(CelesteNetPlayerGraphics? graphics)
+    private static CelesteNetColor[] ResolveHairColors(
+        CelesteNetPlayerFrame? appearance,
+        CelesteNetPlayerGraphics? graphics,
+        CelesteNetColor paletteColor,
+        int paletteLength
+    )
     {
+        int hairCount = graphics?.HairCount ?? 0;
+        if (hairCount <= 0)
+        {
+            hairCount = paletteLength;
+        }
+
+        CelesteNetColor[]? template = appearance?.HairColors;
+        if (template is { Length: > 0 } && template.Length == hairCount)
+        {
+            return template;
+        }
+
+        // The template is stale (a dash changed the hair length, or nothing arrived yet): use MiaoNet's
+        // default palette for the current dash count until the next real frame corrects it.
+        CelesteNetColor[] colors = new CelesteNetColor[hairCount];
+        Array.Fill(colors, paletteColor);
+        return colors;
+    }
+
+    private static string ResolveHairTexture0(CelesteNetPlayerFrame? appearance, CelesteNetPlayerGraphics? graphics)
+    {
+        if (appearance is not null && appearance.HairTexture0.Length > 0)
+        {
+            return appearance.HairTexture0;
+        }
+
         if (graphics is not null && graphics.HairTexture0.Length > 0)
         {
             return graphics.HairTexture0;
@@ -335,7 +468,10 @@ public sealed class CelesteNetFrameSynthesizer
         return DefaultHairTexture;
     }
 
-    private static CelesteNetPlayerFrameEntity[] ResolveFollowers(CelesteNetFollowerInput[]? followers)
+    private static CelesteNetPlayerFrameEntity[] ResolveFollowers(
+        CelesteNetPlayerFrame? appearance,
+        CelesteNetFollowerInput[]? followers
+    )
     {
         if (followers is null || followers.Length == 0)
         {
@@ -343,16 +479,21 @@ public sealed class CelesteNetFrameSynthesizer
         }
 
         int count = Math.Min(followers.Length, MaxFollowers);
+        CelesteNetPlayerFrameEntity[] template = appearance?.Followers ?? [];
         CelesteNetPlayerFrameEntity[] result = new CelesteNetPlayerFrameEntity[count];
         for (int i = 0; i < count; i++)
         {
             CelesteNetFollowerInput follower = followers[i];
+            CelesteNetPlayerFrameEntity? style = i < template.Length ? template[i] : null;
             result[i] = new() {
-                ScaleX = 1f,
-                ScaleY = 1f,
-                Color = CelesteNetColor.White,
-                Depth = FallbackEntityDepth,
-                SpriteRate = 1f,
+                ScaleX = style?.ScaleX ?? 1f,
+                ScaleY = style?.ScaleY ?? 1f,
+                Color = style?.Color ?? CelesteNetColor.White,
+                Depth = style?.Depth ?? FallbackEntityDepth,
+                SpriteRate = style?.SpriteRate ?? 1f,
+                HasJustify = style?.HasJustify ?? false,
+                JustifyX = style?.JustifyX ?? 0f,
+                JustifyY = style?.JustifyY ?? 0f,
                 SpriteID = follower.SpriteID ?? "",
                 AnimationID = follower.AnimationID ?? "",
                 AnimationFrame = follower.AnimationFrame,
@@ -362,7 +503,10 @@ public sealed class CelesteNetFrameSynthesizer
         return result;
     }
 
-    private static CelesteNetPlayerFrameEntity? ResolveHolding(CelesteNetHoldableInput holdable)
+    private static CelesteNetPlayerFrameEntity? ResolveHolding(
+        CelesteNetPlayerFrame? appearance,
+        CelesteNetHoldableInput holdable
+    )
     {
         string spriteID = holdable.Kind switch {
             CelesteNetHoldableKind.Theo => TheoHoldingSprite,
@@ -377,17 +521,31 @@ public sealed class CelesteNetFrameSynthesizer
             return null;
         }
 
-        string animationID = string.IsNullOrEmpty(holdable.AnimationID) ? "idle" : holdable.AnimationID;
+        CelesteNetPlayerFrameEntity? style = appearance?.Holding;
+        if (style is not null && style.SpriteID != spriteID)
+        {
+            // The template still holds the previous item; its styling would fit the wrong sprite.
+            style = null;
+        }
+
+        string animationID = holdable.AnimationID;
+        if (string.IsNullOrEmpty(animationID))
+        {
+            animationID = style is not null && style.AnimationID.Length > 0 ? style.AnimationID : "idle";
+        }
 
         bool jelly = holdable.Kind == CelesteNetHoldableKind.Jelly;
         return new() {
             OffsetX = holdable.OffsetX,
             OffsetY = holdable.OffsetY,
-            ScaleX = jelly ? holdable.ScaleX : 1f,
-            ScaleY = jelly ? holdable.ScaleY : 1f,
-            Color = CelesteNetColor.White,
-            Depth = FallbackEntityDepth,
-            SpriteRate = 1f,
+            ScaleX = jelly ? holdable.ScaleX : style?.ScaleX ?? 1f,
+            ScaleY = jelly ? holdable.ScaleY : style?.ScaleY ?? 1f,
+            Color = style?.Color ?? CelesteNetColor.White,
+            Depth = style?.Depth ?? FallbackEntityDepth,
+            SpriteRate = style?.SpriteRate ?? 1f,
+            HasJustify = style?.HasJustify ?? false,
+            JustifyX = style?.JustifyX ?? 0f,
+            JustifyY = style?.JustifyY ?? 0f,
             SpriteID = spriteID,
             AnimationID = animationID,
             AnimationFrame = holdable.AnimationFrame,
@@ -409,8 +567,101 @@ public sealed class CelesteNetFrameSynthesizer
         };
     }
 
+    /// <summary>
+    /// The fields of a real frame that a synthesised frame copies instead of deriving from a MiaoNet
+    /// delta. Two frames with equal projections are the same appearance, so only the first of them is
+    /// worth sending as a keyframe. Per-frame fields such as the position, the animation and the dash
+    /// state are not part of it: they change every tick and would make every frame a keyframe.
+    /// </summary>
+    private readonly struct AppearanceProjection
+    {
+        private readonly CelesteNetColor[] hairColors;
+        private readonly string hairTexture0;
+        private readonly CelesteNetColor color;
+        private readonly FollowerStyle[] followers;
+        private readonly bool hasHolding;
+        private readonly HoldingStyle holding;
+
+        public AppearanceProjection(CelesteNetPlayerFrame frame)
+        {
+            hairColors = frame.HairColors;
+            hairTexture0 = frame.HairTexture0;
+            color = frame.Color;
+
+            CelesteNetPlayerFrameEntity[] frameFollowers = frame.Followers;
+            followers = new FollowerStyle[frameFollowers.Length];
+            for (int i = 0; i < frameFollowers.Length; i++)
+            {
+                CelesteNetPlayerFrameEntity follower = frameFollowers[i];
+                followers[i] = new(
+                    follower.ScaleX,
+                    follower.ScaleY,
+                    follower.Color,
+                    follower.Depth,
+                    follower.SpriteRate,
+                    follower.HasJustify,
+                    follower.JustifyX,
+                    follower.JustifyY
+                );
+            }
+
+            if (frame.Holding is { } held)
+            {
+                hasHolding = true;
+                holding = new(
+                    held.SpriteID,
+                    held.ScaleX,
+                    held.ScaleY,
+                    held.Color,
+                    held.Depth,
+                    held.SpriteRate,
+                    held.HasJustify,
+                    held.JustifyX,
+                    held.JustifyY
+                );
+            }
+        }
+
+        public bool Matches(AppearanceProjection other)
+            => color == other.color
+                && string.Equals(hairTexture0, other.hairTexture0, StringComparison.Ordinal)
+                && hairColors.AsSpan().SequenceEqual(other.hairColors)
+                && followers.AsSpan().SequenceEqual(other.followers)
+                && hasHolding == other.hasHolding
+                && (!hasHolding || holding.Equals(other.holding));
+    }
+
+    /// <summary>The styling of one follower, without the sprite and animation its delta carries.</summary>
+    private readonly record struct FollowerStyle(
+        float ScaleX,
+        float ScaleY,
+        CelesteNetColor Color,
+        int Depth,
+        float SpriteRate,
+        bool HasJustify,
+        float JustifyX,
+        float JustifyY
+    );
+
+    /// <summary>The styling of the held entity; its sprite id decides whether the style still fits.</summary>
+    private readonly record struct HoldingStyle(
+        string SpriteID,
+        float ScaleX,
+        float ScaleY,
+        CelesteNetColor Color,
+        int Depth,
+        float SpriteRate,
+        bool HasJustify,
+        float JustifyX,
+        float JustifyY
+    );
+
     private sealed class PlayerState
     {
+        public CelesteNetPlayerFrame? Appearance;
+        public AppearanceProjection? Projection;
+        public bool AppearanceKeyframePending;
+        public double? LastAppearanceKeyframeSeconds;
         public CelesteNetPlayerGraphics? Graphics;
         public bool Dead;
         public bool HasPositionSample;
