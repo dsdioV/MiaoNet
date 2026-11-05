@@ -84,6 +84,15 @@ public static class CelesteNetBridgeEntry {
     /// <summary>The stream a pending identity answer has to go back on.</summary>
     private static NetMod? identityResponseTarget;
 
+    /// <summary>Per-session synthesised frame state: animation table, tombstones and pending frames.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, CelesteNetFrameSynthesizer> synthesizers = [];
+
+    /// <summary>Players whose first synthesised frame was logged per session, so the log names each once.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, HashSet<uint>> synthesisLogged = [];
+
+    /// <summary>Set after an encoding failure so the log names it once, not every tick.</summary>
+    private static bool synthesisEncodeFailureLogged;
+
     /// <summary>
     /// Tail of the send chain of each session. Every bridge frame goes through it, so the real client
     /// receives them in the order they were decided on: playerInfo before the graphics it is bound to.
@@ -384,6 +393,8 @@ public static class CelesteNetBridgeEntry {
             watchedContext.PlayerLocationChanged -= OnRemotePlayerLocationChanged;
             watchedContext.PlayerChannelMoved -= OnRemotePlayerChannelMoved;
             watchedContext.SelfChannelMoved -= OnSelfChannelMoved;
+            watchedContext.FrameTick -= OnSynthesisedFrameTick;
+            watchedContext.PlayerLiveStateNotification -= OnRemotePlayerLiveState;
             watchedContext.ClientInitialized -= OnMiaoNetClientInitialized;
             watchedContext = null;
         }
@@ -405,6 +416,8 @@ public static class CelesteNetBridgeEntry {
         lock (sessions) {
             sessions.Clear();
             peers.Clear();
+            synthesizers.Clear();
+            synthesisLogged.Clear();
         }
 
         // A pending identity answer belonged to the stream that just went away.
@@ -414,6 +427,7 @@ public static class CelesteNetBridgeEntry {
         // Bound refs are remembered per session: a payload naming the old one would not bind.
         ownBoundRefs.Clear();
         baseIdentityRequestLogged = false;
+        synthesisEncodeFailureLogged = false;
 
         nameTagMirror?.Uninstall();
         nameTagMirror = null;
@@ -520,6 +534,8 @@ public static class CelesteNetBridgeEntry {
             identityRequesters[session] = new();
             remoteFeeds[session] = [];
             peers[session] = new();
+            synthesizers[session] = new();
+            synthesisLogged[session] = [];
         }
 
         session.FrameReceived += OnLocalFrame;
@@ -544,6 +560,8 @@ public static class CelesteNetBridgeEntry {
             identityRequesters.Remove(session);
             remoteFeeds.Remove(session);
             peers.Remove(session);
+            synthesizers.Remove(session);
+            synthesisLogged.Remove(session);
             sendTails.Remove(session);
         }
     }
@@ -620,6 +638,9 @@ public static class CelesteNetBridgeEntry {
         context.PlayerLocationChanged += OnRemotePlayerLocationChanged;
         context.PlayerChannelMoved += OnRemotePlayerChannelMoved;
         context.SelfChannelMoved += OnSelfChannelMoved;
+        // Synthesis has one producer per MiaoNet player tick and one edge event for death and respawn.
+        context.FrameTick += OnSynthesisedFrameTick;
+        context.PlayerLiveStateNotification += OnRemotePlayerLiveState;
         // A reconnect can assign a new MiaoNet player id; the real client cannot adopt it in place.
         context.ClientInitialized += OnMiaoNetClientInitialized;
         watchedContext = context;
@@ -777,6 +798,16 @@ public static class CelesteNetBridgeEntry {
                     ReplayBoundRefFrames(netMod);
             }
 
+            // Local synthesis wants what only the real frames carry: the animation table and the
+            // player's hair texture.
+            if (typeId == CelesteNetRemoteFeed.PlayerGraphicsTypeId) {
+                RememberSynthesisedGraphics(session, sender, packet.Payload);
+            } else if (typeId == CelesteNetRemoteFeed.PlayerFrameTypeId) {
+                // The local client is given a frame built from MiaoNet's player data from now on.
+                ReportSkip(session, typeId, "synthesised locally");
+                continue;
+            }
+
             if (FeedOf(session, sender) is not { } feed)
                 continue;
 
@@ -851,8 +882,13 @@ public static class CelesteNetBridgeEntry {
     /// Asks for identity frames again on every map change, instead of trusting the one request sent
     /// when the real client connected, which usually happens while still in the menus.
     /// </summary>
-    private static void OnLocalPlayerLocationChanged(PlayerLocation location, bool forceFullChange)
-        => ResetIdentityRequests();
+    private static void OnLocalPlayerLocationChanged(PlayerLocation location, bool forceFullChange) {
+        ResetIdentityRequests();
+
+        // Frames captured in the room we left would arrive in the new one with the wrong position,
+        // and the speed baseline belongs to the old level.
+        ResetSynthesisedFrames();
+    }
 
     /// <summary>Keeps the newest copy of one of our own identity frames, for peers that join later.</summary>
     private static void RememberOwnIdentity(CelesteNetFakeSession session, string typeId, byte[] payload) {
@@ -1028,6 +1064,10 @@ public static class CelesteNetBridgeEntry {
     private static void OnRemoteLeave(PacketEnvelope envelope, PacketBridgeLeave packet) {
         uint sender = (uint)envelope.SenderPlayerID;
 
+        // Before the dead playerInfo is queued: it frees the client's reference, so a synthesised
+        // frame decided after this point would name a player the client no longer knows.
+        TombstoneSynthesisedPlayer(sender);
+
         CelesteNetFakeSession[] targets;
         lock (sessions)
             targets = [.. sessions];
@@ -1047,6 +1087,10 @@ public static class CelesteNetBridgeEntry {
     /// </summary>
     private static void OnPlayerLeft(OnlinePlayer player) {
         uint id = (uint)player.ID;
+
+        // Before the dead playerInfo is queued: it frees the client's reference, so a synthesised
+        // frame decided after this point would name a player the client no longer knows.
+        TombstoneSynthesisedPlayer(id);
 
         CelesteNetFakeSession[] targets;
         lock (sessions)
@@ -1105,6 +1149,10 @@ public static class CelesteNetBridgeEntry {
                 watch.Clear();
         }
 
+        // Every one of them is about to be freed in the local client: stop their synthesised frames first.
+        foreach (uint id in ids)
+            TombstoneSynthesisedPlayer(id);
+
         foreach (uint id in ids) {
             if (session.IsHandshaken)
                 QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
@@ -1158,8 +1206,14 @@ public static class CelesteNetBridgeEntry {
     /// Changing room or channel means the player's frames stop reaching our map, while CelesteNet keeps
     /// a ghost forever: announce the leave so the body goes away instead of freezing in place.
     /// </summary>
-    private static void OnRemotePlayerLocationChanged(OnlinePlayer player, PacketPlayerLocationChangedNotification packet)
-        => LeaveCelesteNetIfOutsideOurMap(player);
+    private static void OnRemotePlayerLocationChanged(OnlinePlayer player, PacketPlayerLocationChangedNotification packet) {
+        // A room change inside our map pauses that player's frames; a speed or dash state from the old
+        // room would otherwise colour the first frame in the new one.
+        if (IsSharingOurMap(player))
+            ResetSynthesisedPlayer((uint)player.ID);
+
+        LeaveCelesteNetIfOutsideOurMap(player);
+    }
 
     private static void OnRemotePlayerChannelMoved(OnlinePlayer player, PacketPlayerChannelMovedNotification packet)
         => LeaveCelesteNetIfOutsideOurMap(player);
@@ -1179,6 +1233,7 @@ public static class CelesteNetBridgeEntry {
             return;
 
         uint id = (uint)player.ID;
+        TombstoneSynthesisedPlayer(id);
         CelesteNetFakeSession[] targets;
         lock (sessions)
             targets = [.. sessions];
@@ -1233,6 +1288,190 @@ public static class CelesteNetBridgeEntry {
                 $"skip remote {typeId}: {reason}"
             );
         }
+    }
+
+    /// <summary>
+    /// One MiaoNet player tick. Frames queued on the previous engine frame are sent first, then this
+    /// tick replaces whatever that player had pending: MiaoNet can deliver a backlog of deltas in one
+    /// engine frame, and only the newest one is worth encoding. That is the one-frame-per-player limit.
+    /// </summary>
+    private static void OnSynthesisedFrameTick(OnlinePlayer player, PlayerStateDelta delta) {
+        PlayerState? state = player.State;
+        if (state is null)
+            return;
+
+        ulong engineFrame = Engine.FrameCounter;
+        CelesteNetPlayerFrameInput input = BuildSynthesisedInput(player, state, delta);
+
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets) {
+            CelesteNetFrameSynthesizer? synthesizer = SynthesisOf(session);
+            if (synthesizer is null)
+                continue;
+
+            try {
+                foreach (CelesteNetSynthesisedFrame frame in synthesizer.Drain(engineFrame))
+                    DeliverSynthesisedFrame(session, frame);
+            } catch (Exception e) {
+                // A frame that cannot be encoded is skipped, never allowed to escape: this runs in
+                // MiaoNet's frame loop, whose catch-all would disconnect the player from MiaoNet.
+                if (!synthesisEncodeFailureLogged) {
+                    synthesisEncodeFailureLogged = true;
+                    Logger.Log(
+                        LogLevel.Warn, "cnet-bridge",
+                        "could not encode a synthesised playerFrame; skipping it: "
+                        + e.GetType().Name + ": " + e.Message
+                    );
+                }
+            }
+
+            synthesizer.Queue(input, engineFrame);
+        }
+    }
+
+    /// <summary>
+    /// Translates MiaoNet's absolute player state into the fields a CelesteNet frame is built from.
+    /// The delta supplies the one value MiaoNet only sends on dash frames; everything else is already
+    /// merged into the player's state.
+    /// </summary>
+    private static CelesteNetPlayerFrameInput BuildSynthesisedInput(
+        OnlinePlayer player, PlayerState state, PlayerStateDelta delta
+    ) {
+        bool starFlying = state.StateFlags.HasFlag(PlayerStateFlags.StarFlying);
+        FollowerInfo[] followerInfos = state.FollowerInfos;
+        CelesteNetFollowerInput[] followers = new CelesteNetFollowerInput[followerInfos.Length];
+        for (int i = 0; i < followerInfos.Length; i++) {
+            FollowerInfo follower = followerInfos[i];
+            followers[i] = new(follower.SpriteID, follower.AnimationID, follower.AnimationFrame);
+        }
+
+        return new() {
+            PlayerID = (uint)player.ID,
+            PositionX = state.Position.X,
+            PositionY = state.Position.Y,
+            ScaleX = state.Scale.X,
+            ScaleY = state.Scale.Y,
+            AnimationName = state.Animation,
+            AnimationFrame = state.AnimationFrame,
+            FacingLeft = state.StateFlags.HasFlag(PlayerStateFlags.FacingLeft),
+            StarFlying = starFlying,
+            Dashing = state.StateFlags.HasFlag(PlayerStateFlags.Dashing),
+            Dashes = state.Dashes,
+            DashDirection = CelesteNetDashDirections.FromMiaoNet(delta.DashDirection),
+            HairSimulateMotion = !player.IsPaused && !starFlying,
+            DeltaSeconds = Engine.RawDeltaTime,
+            Followers = followers,
+            Holdable = CelesteNetHoldableInputs.For(delta.HasHoldable, state.HoldableInfo),
+        };
+    }
+
+    /// <summary>
+    /// Hands one encoded frame to the real client, but only while it can still resolve the player:
+    /// the ghost has to exist, which needs the relayed graphics and state to have gone through first.
+    /// </summary>
+    private static void DeliverSynthesisedFrame(CelesteNetFakeSession session, CelesteNetSynthesisedFrame frame) {
+        if (!CanDeliverSynthesised(session, frame.PlayerID))
+            return;
+
+        QueueSend(session, frame.Payload);
+        LogSynthesisedFrame(session, frame.PlayerID, frame.Payload.Length);
+    }
+
+    private static bool CanDeliverSynthesised(CelesteNetFakeSession session, uint id) {
+        if (!session.IsHandshaken)
+            return false;
+
+        lock (sessions) {
+            if (!introducedPlayers.TryGetValue(session, out HashSet<uint>? introduced) || !introduced.Contains(id))
+                return false;
+
+            if (!remoteFeeds.TryGetValue(session, out Dictionary<uint, CelesteNetRemoteFeed>? feeds)
+                || !feeds.TryGetValue(id, out CelesteNetRemoteFeed? feed)
+                || !feed.IsGhostReady) {
+                return false;
+            }
+
+            // A tombstone decided after the frame was encoded wins: never name a freed reference.
+            return synthesizers.TryGetValue(session, out CelesteNetFrameSynthesizer? synthesizer)
+                && !synthesizer.IsTombstoned(id);
+        }
+    }
+
+    private static void LogSynthesisedFrame(CelesteNetFakeSession session, uint id, int bytes) {
+        bool first;
+        lock (sessions)
+            first = synthesisLogged.TryGetValue(session, out HashSet<uint>? seen) && seen.Add(id);
+
+        if (first) {
+            Logger.Log(LogLevel.Verbose, "cnet-bridge", $"synth playerFrame #{id} ({bytes} B)");
+        }
+    }
+
+    private static void RememberSynthesisedGraphics(CelesteNetFakeSession session, uint id, byte[] payload) {
+        CelesteNetFrameSynthesizer? synthesizer = SynthesisOf(session);
+        if (synthesizer is null || synthesizer.IsTombstoned(id))
+            return;
+
+        if (CelesteNetPlayerGraphics.TryDecode(payload, out CelesteNetPlayerGraphics? graphics))
+            synthesizer.AcceptGraphics(id, graphics);
+    }
+
+    /// <summary>
+    /// Carries death and respawn into the synthesised frames. MiaoNet's per-tick deltas never mark a
+    /// player dead, and CelesteNet's ghost only reacts to a rising edge, so this state has to be kept.
+    /// </summary>
+    private static void OnRemotePlayerLiveState(OnlinePlayer player, LiveStateType type, Vector2 position) {
+        uint id = (uint)player.ID;
+        bool dead = type is LiveStateType.Die;
+
+        lock (sessions)
+            foreach (CelesteNetFrameSynthesizer synthesizer in synthesizers.Values)
+                synthesizer.SetDead(id, dead);
+
+        if (!dead)
+            ResetSynthesisedPlayer(id);
+    }
+
+    private static CelesteNetFrameSynthesizer? SynthesisOf(CelesteNetFakeSession session) {
+        lock (sessions)
+            return synthesizers.TryGetValue(session, out CelesteNetFrameSynthesizer? synthesizer)
+                ? synthesizer
+                : null;
+    }
+
+    private static void ReviveSynthesisedPlayer(CelesteNetFakeSession session, uint id) {
+        lock (sessions)
+            if (synthesizers.TryGetValue(session, out CelesteNetFrameSynthesizer? synthesizer))
+                synthesizer.Revive(id);
+    }
+
+    private static void ResetSynthesisedPlayer(uint id) {
+        lock (sessions)
+            foreach (CelesteNetFrameSynthesizer synthesizer in synthesizers.Values)
+                synthesizer.ResetTransientState(id);
+    }
+
+    private static void ResetSynthesisedFrames() {
+        lock (sessions) {
+            foreach (CelesteNetFrameSynthesizer synthesizer in synthesizers.Values) {
+                synthesizer.ClearPending();
+                synthesizer.ResetTransientState();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Refuses every future synthesised frame for a player in every session. Always called before the
+    /// dead <c>playerInfo</c> is queued: after it the local client has freed the player's reference, and
+    /// a frame that names an unknown reference makes it drop the connection.
+    /// </summary>
+    private static void TombstoneSynthesisedPlayer(uint id) {
+        lock (sessions)
+            foreach (CelesteNetFrameSynthesizer synthesizer in synthesizers.Values)
+                synthesizer.Tombstone(id);
     }
 
     /// <summary>
