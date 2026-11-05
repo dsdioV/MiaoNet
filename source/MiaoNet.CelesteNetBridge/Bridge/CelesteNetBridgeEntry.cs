@@ -40,6 +40,24 @@ public static class CelesteNetBridgeEntry {
     /// <summary>Remote type ids already skipped per session, so the log names each kind once.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, HashSet<string>> undeliverableTypes = [];
 
+    /// <summary>Our own identity frames per session, kept for peers who joined after we sent them.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, CelesteNetIdentityCache> localIdentities = [];
+
+    /// <summary>Whether each session already asked its peers for their identity frames.</summary>
+    private static readonly Dictionary<CelesteNetFakeSession, CelesteNetIdentityRequester> identityRequesters = [];
+
+    /// <summary>The MiaoNet context subscribed to for id changes, once one exists.</summary>
+    private static MiaoNetContext? identityContext;
+
+    /// <summary>
+    /// Set when a peer asked for our identity before we had both binding frames. The answer follows as
+    /// soon as our own client sends the missing ones; CelesteNet will not send graphics again by itself.
+    /// </summary>
+    private static bool identityResponsePending;
+
+    /// <summary>The stream a pending identity answer has to go back on.</summary>
+    private static NetMod? identityResponseTarget;
+
     /// <summary>
     /// Tail of the send chain of each session. Every bridge frame goes through it, so the real client
     /// receives them in the order they were decided on: playerInfo before the graphics it is bound to.
@@ -115,6 +133,7 @@ public static class CelesteNetBridgeEntry {
 
         // Whatever the real client was doing before the switch flipped, it is over now.
         Quiesce();
+        identityResponsePending = false;
 
         suppress = new();
         suppress.Install();
@@ -146,8 +165,14 @@ public static class CelesteNetBridgeEntry {
         netMod = MiaoNetNetMods.Register(new NetMod(
             NetModName,
             ProtocolVersion,
-            NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame)
+            NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame),
+            // Appended, never inserted: existing peers index the first entry by local id 1.
+            NetModPacketEntry.Create<PacketBridgeIdentityRequest>(PacketScope.Map, OnIdentityRequest)
         ));
+
+        // Entering a map is when identity replay starts to matter: the request sent while still in the
+        // menus had nobody in scope, and a peer may have joined this map while we were away.
+        MiaoNetModule.PlayerLocationChanged += OnLocalPlayerLocationChanged;
 
         Initialized = true;
         Logger.Log(LogLevel.Info, "cnet-bridge",
@@ -192,6 +217,13 @@ public static class CelesteNetBridgeEntry {
             return;
 
         Initialized = false;
+        MiaoNetModule.PlayerLocationChanged -= OnLocalPlayerLocationChanged;
+
+        if (identityContext is not null) {
+            identityContext.ClientInitialized -= OnMiaoNetClientInitialized;
+            identityContext = null;
+        }
+
         ResetRedirect();
         Quiesce();
         if (server != null) {
@@ -202,6 +234,8 @@ public static class CelesteNetBridgeEntry {
 
         lock (sessions)
             sessions.Clear();
+
+        identityResponseTarget = null;
 
         suppress?.Uninstall();
         suppress = null;
@@ -249,6 +283,8 @@ public static class CelesteNetBridgeEntry {
             relayedTypes[session] = [];
             introducedPlayers[session] = [];
             undeliverableTypes[session] = [];
+            localIdentities[session] = new();
+            identityRequesters[session] = new();
         }
 
         session.FrameReceived += OnLocalFrame;
@@ -264,7 +300,70 @@ public static class CelesteNetBridgeEntry {
             relayedTypes.Remove(session);
             introducedPlayers.Remove(session);
             undeliverableTypes.Remove(session);
+            localIdentities.Remove(session);
+            identityRequesters.Remove(session);
             sendTails.Remove(session);
+        }
+    }
+
+    /// <summary>
+    /// The bridge has no update loop of its own, and the frames the real client keeps sending at tick
+    /// rate are the only periodic callback it gets. Retrying the identity request needs one: MiaoNet
+    /// may come online after the first CelesteNet connection, and a forced reconnect can change our id.
+    /// </summary>
+    private static void RefreshIdentityState(CelesteNetFakeSession session) {
+        WatchMiaoNetClientInitialized();
+        RestartSessionsWithStaleIdentity();
+
+        if (MiaoNetNetMods.IsConnected)
+            RequestPeersIdentity(session);
+    }
+
+    /// <summary>
+    /// Subscribes to MiaoNet's re-initialisation event. Idempotent, because the context is created
+    /// lazily the first time the player uses MiaoNet, which can be later than the first CelesteNet
+    /// connection.
+    /// </summary>
+    private static void WatchMiaoNetClientInitialized() {
+        if (identityContext is not null)
+            return;
+
+        MiaoNetContext? context = MiaoNetModule.Instance?.MiaoNetContextOptional;
+        if (context is null)
+            return;
+
+        // A reconnect can assign a new MiaoNet player id; the real client cannot adopt it in place.
+        context.ClientInitialized += OnMiaoNetClientInitialized;
+        identityContext = context;
+    }
+
+    /// <summary>
+    /// MiaoNet can give the player a different id when a reconnect is forced (a player stream changed
+    /// while connected). The real CelesteNet client froze the old id at its handshake, so every payload
+    /// it produces after that names a player its peers no longer know. Let the client handshake again:
+    /// ending the session also announces the old id as gone, and the next startup sequence adopts the
+    /// new one before any of our frames are relayed under it.
+    /// </summary>
+    private static void OnMiaoNetClientInitialized(ClientState state)
+        => RestartSessionsWithStaleIdentity((uint)state.Self.ID);
+
+    private static void RestartSessionsWithStaleIdentity(uint? currentPlayerId = null) {
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets) {
+            if (session.IsIdentityCurrent())
+                continue;
+
+            uint? newId = currentPlayerId ?? LocalIdentity()?.Id;
+            Logger.Log(
+                LogLevel.Info, "cnet-bridge",
+                $"MiaoNet player id changed (#{session.PlayerId}"
+                + (newId is { } id ? $" -> #{id}" : "")
+                + "); restarting the local CelesteNet session so it adopts the new id"
+            );
+            session.Dispose();
         }
     }
 
@@ -273,8 +372,12 @@ public static class CelesteNetBridgeEntry {
     /// playerInfo here is its own record; a remote player's record never comes this way.
     /// </summary>
     private static void OnLocalFrame(CelesteNetFakeSession session, CelesteNetFrame frame) {
+        RefreshIdentityState(session);
+
         if (frame.TypeId is not { } typeId)
             return;
+
+        RememberOwnIdentity(session, typeId, frame.Payload);
 
         string? source = DeclaringSourceOf(typeId);
 
@@ -343,10 +446,18 @@ public static class CelesteNetBridgeEntry {
             if (session.PlayerId == sender)
                 continue;
 
+            if (typeId == CelesteNetIdentityCache.PlayerInfoTypeId) {
+                // A peer answers an identity request with its own record, but the real client takes the
+                // first DataPlayerInfo it ever sees as itself. Every remote record the client needs is
+                // synthesised from MiaoNet before that player's first frame instead.
+                ReportSkip(session, typeId, "remote player records are synthesised from MiaoNet");
+                continue;
+            }
+
             if (!deliverable) {
                 // A teammate on the bridge can only send player frames, so this is a safety net for an
                 // unexpected upstream type; keep the log to one line each.
-                ReportUndeliverable(session, typeId ?? "<unparsed>");
+                ReportSkip(session, typeId ?? "<unparsed>", "it describes the sender's server, not this one");
                 continue;
             }
 
@@ -365,7 +476,120 @@ public static class CelesteNetBridgeEntry {
         }
     }
 
-    private static void ReportUndeliverable(CelesteNetFakeSession session, string typeId) {
+    /// <summary>
+    /// Asks for identity frames again on every map change, instead of trusting the one request sent
+    /// when the real client connected, which usually happens while still in the menus.
+    /// </summary>
+    private static void OnLocalPlayerLocationChanged(PlayerLocation location, bool forceFullChange)
+        => ResetIdentityRequests();
+
+    /// <summary>Keeps the newest copy of one of our own identity frames, for peers that join later.</summary>
+    private static void RememberOwnIdentity(CelesteNetFakeSession session, string typeId, byte[] payload) {
+        bool stored;
+        lock (sessions)
+            stored = localIdentities.TryGetValue(session, out CelesteNetIdentityCache? cache)
+                && cache.Remember(typeId, payload);
+
+        // A peer asked before we had this frame, and the cache may have become complete just now.
+        if (stored && identityResponsePending)
+            TryAnswerIdentityRequest(identityResponseTarget!);
+    }
+
+    /// <summary>
+    /// Asks every peer on the same map for its identity frames, once per MiaoNet connection. A request
+    /// that cannot go out yet is simply retried on the next heartbeat.
+    /// </summary>
+    private static void RequestPeersIdentity(CelesteNetFakeSession session) {
+        CelesteNetIdentityRequester? requester;
+        lock (sessions)
+            identityRequesters.TryGetValue(session, out requester);
+
+        if (requester is null || netMod is not { } target
+            || !requester.ShouldRequest(session.IsHandshaken, MiaoNetNetMods.IsConnected))
+            return;
+
+        try {
+            target.Send(new PacketBridgeIdentityRequest());
+            requester.MarkRequested();
+            Logger.Log(LogLevel.Verbose, "cnet-bridge", "asked peers for their identity frames");
+        } catch (Exception e) {
+            Logger.Log(
+                LogLevel.Verbose, "cnet-bridge",
+                "identity request failed, will retry: " + e.GetType().Name + ": " + e.Message
+            );
+        }
+    }
+
+    private static void ResetIdentityRequests() {
+        lock (sessions)
+            foreach (CelesteNetIdentityRequester requester in identityRequesters.Values)
+                requester.Reset();
+    }
+
+    /// <summary>
+    /// A peer joined the map after we did and asks who we are. Answer with the cached frames, or wait for
+    /// our own client to send the missing ones: it will not send graphics again unless they change.
+    /// </summary>
+    private static void OnIdentityRequest(PacketEnvelope envelope, PacketBridgeIdentityRequest packet) {
+        if (netMod is not { } target)
+            return;
+
+        identityResponsePending = true;
+        identityResponseTarget = target;
+        if (!TryAnswerIdentityRequest(target)) {
+            Logger.Log(
+                LogLevel.Verbose, "cnet-bridge",
+                $"peer #{envelope.SenderPlayerID} asked for our identity; waiting for our own graphics and state"
+            );
+        }
+    }
+
+    /// <summary>
+    /// Sends playerGraphics and playerState in that order, the order the real client can bind them in.
+    /// The player's playerInfo is never part of the answer; receivers synthesise it from MiaoNet's own
+    /// data. Returns false while either binding frame is still unknown.
+    /// </summary>
+    private static bool TryAnswerIdentityRequest(NetMod target) {
+        if (!MiaoNetNetMods.IsConnected)
+            return false;
+
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        bool answered = false;
+        foreach (CelesteNetFakeSession session in targets) {
+            byte[][] frames = [];
+            lock (sessions) {
+                if (!localIdentities.TryGetValue(session, out CelesteNetIdentityCache? cache)
+                    || !cache.TryBuildResponse(out frames))
+                    continue;
+            }
+
+            try {
+                foreach (byte[] frame in frames)
+                    target.Send(new PacketBridgeFrame(frame));
+            } catch (Exception e) {
+                Logger.Log(
+                    LogLevel.Warn, "cnet-bridge",
+                    "identity answer failed: " + e.GetType().Name + ": " + e.Message
+                );
+                return false;
+            }
+
+            answered = true;
+        }
+
+        if (!answered)
+            return false;
+
+        identityResponsePending = false;
+        identityResponseTarget = null;
+        Logger.Log(LogLevel.Verbose, "cnet-bridge", "sent our identity frames to peers");
+        return true;
+    }
+
+    private static void ReportSkip(CelesteNetFakeSession session, string typeId, string reason) {
         bool first;
         lock (sessions)
             first = undeliverableTypes.TryGetValue(session, out HashSet<string>? seen) && seen.Add(typeId);
@@ -373,7 +597,7 @@ public static class CelesteNetBridgeEntry {
         if (first) {
             Logger.Log(
                 LogLevel.Verbose, "cnet-bridge",
-                $"skip remote {typeId}: it describes the sender's server, not this one"
+                $"skip remote {typeId}: {reason}"
             );
         }
     }
