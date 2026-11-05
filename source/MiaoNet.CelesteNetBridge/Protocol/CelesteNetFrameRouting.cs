@@ -18,7 +18,7 @@ public enum CelesteNetFrameLane : byte
 
 /// <summary>
 /// Splits the frames the local real client produces between the legacy bridge NetMod and the one
-/// player stream this client always declares while the bridge is on.
+/// synthesis stream this client always declares while the bridge is on.
 /// </summary>
 /// <remarks>
 /// Frames that carry a bound reference to the sender's <c>playerInfo</c> have to travel on the same
