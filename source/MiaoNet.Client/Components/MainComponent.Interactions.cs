@@ -1,4 +1,4 @@
-﻿using MiaoNet.Shared;
+using MiaoNet.Shared;
 
 namespace Celeste.Mod.MiaoNet;
 
@@ -71,8 +71,22 @@ partial class MainComponent
 
     }
 
+    private static bool bridgeInteractionsLogged;
+
     private void UpdateInteractions(Level level, Player player)
     {
+        // While the bridge is active remote players are CelesteNet's ghosts and MiaoNet has no ghost to
+        // grab; both sides of an interaction would be driven by two different pipelines.
+        if (MiaoNetModule.IsCelesteNetBridgeActive)
+        {
+            if (!bridgeInteractionsLogged)
+            {
+                bridgeInteractionsLogged = true;
+                Logger.Info(LT.MiaoNet, "player interactions are disabled while CelesteNet renders remote players");
+            }
+            return;
+        }
+
         bool interactionsOn = MiaoNetModule.Settings.PlayerInteractions;
 
         // ensure screen transitions

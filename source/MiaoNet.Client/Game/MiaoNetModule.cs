@@ -67,6 +67,13 @@ public sealed class MiaoNetModule : EverestModule
 
     private static bool CelesteNetBridgeEngaged => celesNetBridgeEngaged?.GetValue(null) is true;
 
+    /// <summary>
+    /// Whether MiaoNet's own player interactions run. Disabled while CelesteNet renders the players:
+    /// there is no MiaoNet ghost to grab, and the two pipelines must not both drive the same player.
+    /// </summary>
+    internal static bool PlayerInteractionsActive
+        => Settings.PlayerInteractions && !IsCelesteNetBridgeActive;
+
     private static readonly DetourConfig RootConfig = new("MiaoNet");
     private static readonly DetourConfig RootBeforeAllConfig = new("MiaoNet.BeforeAll", before: ["*"]);
 

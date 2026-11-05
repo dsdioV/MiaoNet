@@ -64,8 +64,10 @@ public sealed partial class MainComponent : MiaoNetComponent
         foreach (var pair in ghosts)
             pair.Value.RemoveSelf();
         ghosts.Clear();
+        fallbackGhostTimers.Clear();
         selfNameTag?.RemoveSelf();
         selfNameTag = null;
+        CleanUpRemoteNameTags();
         CleanUpWatching();
         CleanUpInteractions(Engine.Scene as Level);
         MiaoNetModule.Settings.GroupPhotoMode = false;
@@ -93,7 +95,7 @@ public sealed partial class MainComponent : MiaoNetComponent
             globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.Paused, Engine.Scene.Paused);
             globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.Typing, context.ChatComponent.Active);
             globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.LiveMode, settings.LiveMode);
-            globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.Interactions, settings.PlayerInteractions);
+            globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.Interactions, MiaoNetModule.PlayerInteractionsActive);
             globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.GroupPhotoMode, settings.GroupPhotoMode);
             globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.Watching, playerWatching is not null);
             globalFlags = WithFlag(globalFlags, PlayerGlobalFlags.TakingGolden, level?.Session.GrabbedGolden == true);
@@ -109,6 +111,8 @@ public sealed partial class MainComponent : MiaoNetComponent
 
         if (level is null)
             return;
+
+        ReconcileRemotePlayerBodies(level);
 
         // location update
         if (pendingMapChanged)
@@ -220,7 +224,7 @@ public sealed partial class MainComponent : MiaoNetComponent
         if (player.StateMachine.State == Player.StStarFly)
             stateFlags |= PlayerStateFlags.StarFlying;
 
-        if (MiaoNetModule.Settings.PlayerInteractions && player.InControl)
+        if (MiaoNetModule.PlayerInteractionsActive && player.InControl)
             stateFlags |= PlayerStateFlags.Interactions;
 
         if (player.Ducking)
@@ -431,7 +435,7 @@ public sealed partial class MainComponent : MiaoNetComponent
         if (player.Facing == Facings.Left)
             stateFlags |= PlayerStateFlags.FacingLeft;
 
-        if (MiaoNetModule.Settings.PlayerInteractions)
+        if (MiaoNetModule.PlayerInteractionsActive)
             stateFlags |= PlayerStateFlags.Interactions;
 
         if (player.Ducking)
@@ -532,6 +536,8 @@ public sealed partial class MainComponent : MiaoNetComponent
                 level.CompletelyRemove(g.Value);
         }
         ghosts.Clear();
+        fallbackGhostTimers.Clear();
+        CleanUpRemoteNameTags();
     }
 
     private void Context_PlayerLocationChanged(OnlinePlayer player, PacketPlayerLocationChangedNotification packet)
@@ -626,6 +632,15 @@ public sealed partial class MainComponent : MiaoNetComponent
             return;
         if (!ClientState.Self.ShouldSyncFrom(player))
             return;
+
+        // While the bridge is active the ghost is CelesteNet's; only MiaoNet's tag has to go.
+        if (MiaoNetModule.IsCelesteNetBridgeActive)
+        {
+            RemoveRemoteNameTag(player.ID);
+            fallbackGhostTimers.Remove(player.ID);
+            return;
+        }
+
         if (!ghosts.Remove(player.ID, out MiaoNetGhost? ghost))
         {
             Logger.Warn(LT.MiaoNet, $"Tried to remove the ghost of {player.Info}, but it does not exist.");
@@ -696,9 +711,21 @@ public sealed partial class MainComponent : MiaoNetComponent
         // TODO prevent this server-side
         if (!MiaoNetModule.Settings.Fireworks)
             return;
-        if (!ghosts.TryGetValue(player.ID, out var ghost))
+        if (ghosts.TryGetValue(player.ID, out var ghost))
+        {
+            ghost.OnCreatedFireworks(color, initialSpeed);
             return;
-        ghost.OnCreatedFireworks(color, initialSpeed);
+        }
+
+        // No MiaoNet ghost: while the bridge is active the player is CelesteNet's ghost, which may
+        // not exist yet. Then there is nowhere to put the fireworks.
+        if (Engine.Scene is not Level level)
+            return;
+        if (!RemotePlayerAnchor.TryGet(player.ID, out Entity? anchor))
+            return;
+        if (!level.InsideCamera(anchor.Center, 128f))
+            return;
+        level.Add(new Fireworks(anchor.Position, color, initialSpeed));
     }
 
     private void MiaoNetModule_PlayerSoundPlayed(string sound, string? param, float value)
@@ -751,10 +778,22 @@ public sealed partial class MainComponent : MiaoNetComponent
 
     private void HandleLocationChanging(Level level, OnlinePlayer other)
     {
+        // Whatever the previous mode left behind for this player is dropped first, so the switch is
+        // idempotent and never ends up with both a MiaoNet ghost and a remote name tag for one player.
+        RemoveRemoteNameTag(other.ID);
         if (ghosts.TryGetValue(other.ID, out MiaoNetGhost? ghost))
         {
             level.CompletelyRemove(ghost);
             ghosts.Remove(other.ID);
+        }
+
+        // The bridge hands remote players to CelesteNet's ghosts; MiaoNet must not add a second copy,
+        // only the name tag that follows the CelesteNet ghost. The check is made per creation, so a
+        // bridge enabled later takes effect from the next level on.
+        if (MiaoNetModule.IsCelesteNetBridgeActive)
+        {
+            EnsureRemoteNameTag(level, other);
+            return;
         }
         if (other.State is not null && other.Location.IsInMap)
         {
@@ -768,6 +807,10 @@ public sealed partial class MainComponent : MiaoNetComponent
         }
     }
 
+    /// <summary>
+    /// Gets the entity that renders a remote player: MiaoNet's own ghost, or, in the full player
+    /// pipeline, CelesteNet's ghost through the anchor seam.
+    /// </summary>
     public bool TryGetGhostTarget(int playerID, [NotNullWhen(true)] out Entity? entity)
     {
         if (ghosts.TryGetValue(playerID, out MiaoNetGhost? ghost))
@@ -775,11 +818,8 @@ public sealed partial class MainComponent : MiaoNetComponent
             entity = ghost;
             return true;
         }
-        else
-        {
-            entity = null;
-            return false;
-        }
+
+        return RemotePlayerAnchor.TryGet(playerID, out entity);
     }
 
     public bool TryConsumeTeleport()
