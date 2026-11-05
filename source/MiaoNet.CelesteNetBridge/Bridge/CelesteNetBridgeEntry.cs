@@ -46,6 +46,9 @@ public static class CelesteNetBridgeEntry {
     /// <summary>Whether each session already asked its peers for their identity frames.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, CelesteNetIdentityRequester> identityRequesters = [];
 
+    /// <summary>The MiaoNet context subscribed to for id changes, once one exists.</summary>
+    private static MiaoNetContext? identityContext;
+
     /// <summary>
     /// Set when a peer asked for our identity before we had both binding frames. The answer follows as
     /// soon as our own client sends the missing ones; CelesteNet will not send graphics again by itself.
@@ -231,6 +234,12 @@ public static class CelesteNetBridgeEntry {
 
         Engaged = false;
         MiaoNetModule.PlayerLocationChanged -= OnLocalPlayerLocationChanged;
+
+        if (identityContext is not null) {
+            identityContext.ClientInitialized -= OnMiaoNetClientInitialized;
+            identityContext = null;
+        }
+
         ResetRedirect();
         Quiesce();
 
@@ -359,8 +368,59 @@ public static class CelesteNetBridgeEntry {
     /// may come online after the first CelesteNet connection, and a forced reconnect can change our id.
     /// </summary>
     private static void RefreshIdentityState(CelesteNetFakeSession session) {
+        WatchMiaoNetClientInitialized();
+        RestartSessionsWithStaleIdentity();
+
         if (MiaoNetNetMods.IsConnected)
             RequestPeersIdentity(session);
+    }
+
+    /// <summary>
+    /// Subscribes to MiaoNet's re-initialisation event. Idempotent, because the context is created
+    /// lazily the first time the player uses MiaoNet, which can be later than the first CelesteNet
+    /// connection.
+    /// </summary>
+    private static void WatchMiaoNetClientInitialized() {
+        if (identityContext is not null)
+            return;
+
+        MiaoNetContext? context = MiaoNetModule.Instance?.MiaoNetContextOptional;
+        if (context is null)
+            return;
+
+        // A reconnect can assign a new MiaoNet player id; the real client cannot adopt it in place.
+        context.ClientInitialized += OnMiaoNetClientInitialized;
+        identityContext = context;
+    }
+
+    /// <summary>
+    /// MiaoNet can give the player a different id when a reconnect is forced (a player stream changed
+    /// while connected). The real CelesteNet client froze the old id at its handshake, so every payload
+    /// it produces after that names a player its peers no longer know. Let the client handshake again:
+    /// ending the session also announces the old id as gone, and the next startup sequence adopts the
+    /// new one before any of our frames are relayed under it.
+    /// </summary>
+    private static void OnMiaoNetClientInitialized(ClientState state)
+        => RestartSessionsWithStaleIdentity((uint)state.Self.ID);
+
+    private static void RestartSessionsWithStaleIdentity(uint? currentPlayerId = null) {
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets) {
+            if (session.IsIdentityCurrent())
+                continue;
+
+            uint? newId = currentPlayerId ?? LocalIdentity()?.Id;
+            Logger.Log(
+                LogLevel.Info, "cnet-bridge",
+                $"MiaoNet player id changed (#{session.PlayerId}"
+                + (newId is { } id ? $" -> #{id}" : "")
+                + "); restarting the local CelesteNet session so it adopts the new id"
+            );
+            session.Dispose();
+        }
     }
 
     /// <summary>
