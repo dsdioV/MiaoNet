@@ -31,6 +31,10 @@ miaonet_options_cnet_bridge_tip=
 	但无论开关如何，MiaoNet 与 CelesteNet 不能同时连接：
 	连上其中一个会自动断开另一个。
 
+miaonet_cnet_took_over_message= 检测到 CelesteNet 已连接，MiaoNet 已自动断开。
+miaonet_cnet_bridge_off_message= CelesteNet 已断开，接管 CelesteNet 连接已自动关闭。
+miaonet_cnet_waiting_for_miao_message= 正在等待 MiaoNet；连上后 CelesteNet 会自动加入。
+
 miaonet_options_visuals= 视觉
 miaonet_options_show_avatar= 显示头像
 miaonet_options_show_avatar_tip=

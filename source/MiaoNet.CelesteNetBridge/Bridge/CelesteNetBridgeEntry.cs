@@ -58,6 +58,46 @@ public static class CelesteNetBridgeEntry {
     /// <summary>The port the local server listens on, or 0 when it is not running.</summary>
     public static int LocalPort => server?.Port ?? 0;
 
+    /// <summary>
+    /// Whether CelesteNet's <c>ServerOverride</c> currently points at this bridge's loopback server.
+    /// MiaoNet writes that address while the switch is on and this clears it again on shutdown.
+    /// </summary>
+    public static bool IsCelesteNetPointedAtTheBridge => ResolveTarget(out string host, out int port)
+        && IsLoopbackHost(host)
+        && port == LocalPort
+        && LocalPort != 0;
+
+    /// <summary>Whether a host name in <c>ServerOverride</c> means this machine.</summary>
+    private static bool IsLoopbackHost(string host)
+        => string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Splits CelesteNet's <c>ServerOverride</c>. CelesteNet's own "connect locally" button writes just
+    /// <c>localhost</c> and lets the port default, while auto connect writes <c>127.0.0.1:&lt;port&gt;</c>.
+    /// </summary>
+    private static bool ResolveTarget(out string host, out int port) {
+        host = "";
+        port = 17230;
+
+        string? raw = CelesteNetClientModule.Settings.ServerOverride;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        string target = raw.Trim();
+        int separator = target.LastIndexOf(':');
+        if (separator <= 0) {
+            host = target;
+            return true;
+        }
+
+        host = target[..separator];
+        if (!int.TryParse(target[(separator + 1)..], out port))
+            port = 17230;
+
+        return true;
+    }
+
     /// <summary>Turns the bridge on or off at runtime, the way the settings menu does.</summary>
     public static void SetEnabled(bool enabled) {
         if (enabled)
@@ -72,6 +112,9 @@ public static class CelesteNetBridgeEntry {
             return;
 
         WarnAboutUntestedVersion();
+
+        // Whatever the real client was doing before the switch flipped, it is over now.
+        Quiesce();
 
         suppress = new();
         suppress.Install();
@@ -149,6 +192,7 @@ public static class CelesteNetBridgeEntry {
             return;
 
         Initialized = false;
+        ResetRedirect();
         Quiesce();
         if (server != null) {
             server.SessionStarted -= OnSessionStarted;
@@ -164,6 +208,15 @@ public static class CelesteNetBridgeEntry {
 
         netMod?.Dispose();
         netMod = null;
+    }
+
+    /// <summary>
+    /// Drops the redirect once the bridge is gone, so a later "connect" goes wherever the player points
+    /// it instead of dialing a loopback port nobody listens on any more.
+    /// </summary>
+    private static void ResetRedirect() {
+        if (IsCelesteNetPointedAtTheBridge)
+            CelesteNetClientModule.Settings.ServerOverride = "";
     }
 
     /// <summary>
@@ -350,14 +403,13 @@ public static class CelesteNetBridgeEntry {
     /// <summary>
     /// The CelesteNet identity this client should use. Reusing the MiaoNet player id keeps both
     /// sides' references consistent, and gives every player a distinct id.
+    /// Null while there is no MiaoNet session yet: the fake server drops the connection in that case
+    /// rather than handing out an id that every other player also has.
     /// </summary>
-    private static (uint Id, string Name) LocalIdentity() {
+    private static (uint Id, string Name)? LocalIdentity() {
         ClientState? state = MiaoNetModule.Instance?.MiaoNetContext?.ClientState;
         OnlinePlayer? self = state?.Self;
-        if (self is not null)
-            return ((uint)self.ID, self.Info.Name);
-
-        return (1, "Player");
+        return self is null ? null : ((uint)self.ID, self.Info.Name);
     }
 
     /// <summary>

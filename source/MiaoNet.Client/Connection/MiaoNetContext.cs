@@ -87,6 +87,12 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
     [MemberNotNullWhen(true, nameof(connection), nameof(ClientState), nameof(PlayerPresenceMessage))]
     public bool HasConnection => connection is not null && clientState is not null;
 
+    /// <summary>
+    /// Whether a connection operation exists: dialing, or connected. <see cref="HasConnection"/> only
+    /// becomes true once the server's initial packet has been applied.
+    /// </summary>
+    public bool HasConnectionOperation => activeConnectionOperation is not null;
+
     public ClientState? ClientState => clientState;
 
     public MainComponent MainComponent { get; }
@@ -137,6 +143,10 @@ public sealed partial class MiaoNetContext : IPacketSerializationContext
     {
         if (activeConnectionOperation is not null)
             return;
+
+        // Whichever client the player connects last wins: stop CelesteNet before we dial out.
+        if (!MiaoNetModule.IsCelesteNetBridgeActive)
+            CelesteNetCompat.Quiesce();
 
         // TODO hmmm tbh this is ugly, we'd better get a more elegant way to do this
         ShowAvatar = MiaoNetModule.Settings.ShowAvatar;

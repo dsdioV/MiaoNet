@@ -9,12 +9,59 @@ namespace Celeste.Mod.MiaoNet;
 
 public static class MenuMiaoNetOptions
 {
+    /// <summary>
+    /// Rows that show a value something else may change while the menu is open: the player's connection
+    /// is opened in the background and the bridge can switch itself off. Everest builds a menu row once
+    /// with the value it had at that moment, so each row is written back every frame from the live
+    /// state instead of leaving a stale toggle on screen.
+    /// </summary>
+    private static readonly List<(WeakReference<TextMenu.Item> Item, Func<bool> Value)> liveOptions = [];
+
     public static void BuildHeader(TextMenu menu)
     {
         TextMenu.Item item;
         item = new TextMenu.Header(Dialog.Get("miaonet_options_title"));
         menu.Add(item);
     }
+
+    /// <summary>
+    /// Makes an option row follow the live state instead of the value it was built with.
+    /// </summary>
+    private static TextMenu.OnOff Track(TextMenu.OnOff option, Func<bool> value)
+    {
+        liveOptions.Add((new WeakReference<TextMenu.Item>(option), value));
+        return option;
+    }
+
+    /// <summary>
+    /// Called every frame: writes the live value into the rows of the options menu that is currently
+    /// open. Rows of closed menus are forgotten.
+    /// </summary>
+    public static void SyncLiveOptions()
+    {
+        for (int i = liveOptions.Count - 1; i >= 0; i--)
+        {
+            if (!liveOptions[i].Item.TryGetTarget(out TextMenu.Item? item) || item.Container is null)
+            {
+                liveOptions.RemoveAt(i);
+                continue;
+            }
+
+            if (item is TextMenu.Option<bool> option)
+            {
+                int index = liveOptions[i].Value() ? 1 : 0;
+                if (option.Index != index)
+                {
+                    option.Index = index;
+                    option.PreviousIndex = index;
+                }
+            }
+        }
+    }
+
+    private static bool IsMiaoNetConnectedOrConnecting()
+        => MiaoNetModule.Instance.MiaoNetContextOptional is { } context
+            && (context.HasConnection || context.HasConnectionOperation);
 
     public static void BuildMenu(TextMenu menu, bool inGame)
     {
@@ -27,10 +74,11 @@ public static class MenuMiaoNetOptions
 
         // -- MiaoNet --
 
-        item = new TextMenu.OnOff(
+        TextMenu.OnOff connectedOption = new(
             Dialog.Get("miaonet_options_connected"),
-            MiaoNetModule.Instance.MiaoNetContext.HasConnection
-        ).Change(v =>
+            IsMiaoNetConnectedOrConnecting()
+        );
+        connectedOption.Change(v =>
         {
             var context = MiaoNetModule.Instance.MiaoNetContext;
             if (v)
@@ -38,7 +86,7 @@ public static class MenuMiaoNetOptions
             else
                 context.Disconnect();
         });
-        menu.Add(item);
+        menu.Add(Track(connectedOption, IsMiaoNetConnectedOrConnecting));
 
         #region Login State
 
@@ -142,21 +190,22 @@ public static class MenuMiaoNetOptions
 
         #region CelesteNet
 
-        EverestModuleMetadata celesteNetDependency = new()
-        {
-            Name = "CelesteNet.Client",
-            Version = new Version(2, 0, 0)
-        };
-        if (Everest.Loader.DependencyLoaded(celesteNetDependency))
+        if (CelesteNetCompat.IsInstalled)
         {
             item = new TextMenu.SubHeader(Dialog.Get("miaonet_options_cnet_bridge_header"), false);
             menu.Add(item);
 
-            item = new TextMenu.OnOff(
+            TextMenu.OnOff bridgeOption = new(
                 Dialog.Get("miaonet_options_cnet_bridge"),
                 settings.CelesteNetBridgeEnabled
-            ).Change(v => settings.CelesteNetBridgeEnabled = v);
-            menu.Add(item);
+            );
+            bridgeOption.Change(v =>
+            {
+                settings.CelesteNetBridgeEnabled = v;
+                MiaoNetModule.ApplyCelesteNetBridgeSetting(v, playerRequested: true);
+            });
+            menu.Add(Track(bridgeOption, () => MiaoNetModule.Settings.CelesteNetBridgeEnabled));
+            item = bridgeOption;
             item.AddDescription(menu, Dialog.Clean("miaonet_options_cnet_bridge_tip"));
         }
 
