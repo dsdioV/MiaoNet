@@ -9,7 +9,8 @@ namespace MiaoNet.CelesteNetBridge;
 /// <summary>
 /// Silences the real CelesteNet client's own interface. The client stays connected and keeps its data
 /// pipeline alive; it just must not build or draw UI. Its ghosts stay visible: they are the remote
-/// players.
+/// players. Name tags are handled by <see cref="CelesteNetNameTagMirror"/>, which has to run the tag's
+/// own logic to know whether a name may be drawn.
 /// <para>
 /// The components' own Update/Tick keep running: the main component is what drives the player
 /// pipeline.
@@ -55,7 +56,8 @@ internal sealed class CelesteNetSuppression {
             new Action<Action<CelesteNetRenderHelperComponent>, CelesteNetRenderHelperComponent>((_, _) => { }));
 
         // The main component is the player pipeline itself, so it gets no detour: its Initialize,
-        // Update and Tick have to run for CelesteNet's ghosts to exist and move.
+        // Update and Tick have to run for CelesteNet's ghosts to exist and move. Its name tags are
+        // mirrored, not suppressed, by CelesteNetNameTagMirror.
 
         Logger.Log(LogLevel.Info, "cnet-bridge",
             $"suppression: {InstalledCount}/{ExpectedCount} hooks installed, "
