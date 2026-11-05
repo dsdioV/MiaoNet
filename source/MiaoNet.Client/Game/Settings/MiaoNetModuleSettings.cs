@@ -364,6 +364,22 @@ public sealed class MiaoNetModuleSettings : EverestModuleSettings,
     }
 
 
+    #region CelesteNet Bridge
+
+    /// <summary>
+    /// Runs the built-in CelesteNet compatibility layer: the real CelesteNet client is kept, but it is
+    /// pointed at a loopback server run by MiaoNet, and its frames travel over MiaoNet's NetMod pipe.
+    /// Only has an effect when the CelesteNet.Client mod is installed.
+    /// <para>
+    /// On by default: most players have CelesteNet installed because a co-op mod needs it, and the
+    /// bridge is what lets that mod work on MiaoNet. Players who want CelesteNet's own servers instead
+    /// can turn it off.
+    /// </para>
+    /// </summary>
+    public bool CelesteNetBridgeEnabled { get; set; } = true;
+
+    #endregion
+
     private void NotifySettingsChanged(SettingsCategory category)
         => SettingsChanged?.Invoke(this, category);
 }
