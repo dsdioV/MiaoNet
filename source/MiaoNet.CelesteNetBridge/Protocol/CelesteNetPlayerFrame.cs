@@ -110,6 +110,16 @@ public sealed class CelesteNetPlayerFrame
         ArgumentNullException.ThrowIfNull(frame);
 
         byte[] body = EncodeBody(frame);
+        if (body.Length > ushort.MaxValue)
+        {
+            // The wire length field is 16 bits; truncating here would make the real client see a
+            // length mismatch and drop the connection.
+            throw new InvalidOperationException(
+                "playerFrame body is " + body.Length.ToString(CultureInfo.InvariantCulture)
+                + " bytes; the wire length field holds at most " + ushort.MaxValue.ToString(CultureInfo.InvariantCulture)
+            );
+        }
+
         ArrayBufferWriter<byte> payload = new(body.Length + 64);
         CelesteNetWireWriter writer = new(payload);
 
@@ -292,8 +302,9 @@ public sealed class CelesteNetPlayerFrame
             frame = DecodeBody(CelesteNetPayload.SplitBody(payload, TypeId));
             return true;
         }
-        catch (InvalidDataException)
+        catch (Exception e) when (e is InvalidDataException or DecoderFallbackException)
         {
+            // Malformed strings must degrade to "do not handle this frame", not escape the handler.
             return false;
         }
     }
