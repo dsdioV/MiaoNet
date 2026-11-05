@@ -19,6 +19,24 @@ public class CelesteNetBridgePacketTests {
     }
 
     [TestMethod]
+    public void IdentityRequestIsAnEmptyRoundTrippablePacket() {
+        // The request carries no body: who asks is the MiaoNet envelope. Peers answer with their cached
+        // frames instead, so the packet itself stays one byte wide on the wire (just its local id).
+        var request = new PacketBridgeIdentityRequest();
+        ByteArrayBufferWriter buffer = new();
+        var writer = new RefBinaryWriter(buffer);
+        request.Serialize(ref writer, null!);
+        writer.Flush();
+
+        Assert.AreEqual(0, buffer.WrittenSpan.Length, "the identity request has no body");
+
+        var reader = new RefBinaryReader(buffer.WrittenSpan);
+        PacketBridgeIdentityRequest result = PacketBridgeIdentityRequest.Deserialize(ref reader, null!);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0, reader.BytesLeft);
+    }
+
+    [TestMethod]
     public void PreservesArbitraryCelesteNetPayloadsByteForByte() {
         byte[] payload = CelesteNetDataTypes.Encode(
             0,
