@@ -22,6 +22,19 @@ public sealed class MiaoNetModule : EverestModule
     public override Type SettingsType => typeof(MiaoNetModuleSettings);
     public static MiaoNetModuleSettings Settings => (MiaoNetModuleSettings)Instance._Settings;
 
+    /// <summary>
+    /// Set while the built-in CelesteNet bridge is running. The bridge is a second assembly inside
+    /// this mod: MiaoNet.dll must never reference CelesteNet types directly, or it would stop loading
+    /// for players who do not have CelesteNet installed.
+    /// </summary>
+    private static bool celesNetBridgeActive;
+    private static bool celesNetBridgeResolved;
+    private static MethodInfo? celesNetBridgeSetEnabled;
+    private static PropertyInfo? celesNetBridgeInitialized;
+
+    /// <summary>Whether the bridge is running, so CelesteNet talks to us instead of to a server.</summary>
+    internal static bool IsCelesteNetBridgeActive => celesNetBridgeActive;
+
     private static readonly DetourConfig RootConfig = new("MiaoNet");
     private static readonly DetourConfig RootBeforeAllConfig = new("MiaoNet.BeforeAll", before: ["*"]);
 
@@ -94,6 +107,8 @@ public sealed class MiaoNetModule : EverestModule
         typeof(CollabUtils2Interop).ModInterop();
         typeof(ExtendedVariantInterop).ModInterop();
 
+        TryInitializeCelesteNetBridge();
+
 #if DEBUG
         Engine.Instance.IsMouseVisible = true;
         if (GFX.Loaded && Engine.Scene is Level or AssetReloadHelper)
@@ -103,6 +118,7 @@ public sealed class MiaoNetModule : EverestModule
 
     public override void Unload()
     {
+        ShutdownCelesteNetBridge();
         miaoNetContext?.Disconnect();
         ClientRC.Stop();
         Everest.Events.Level.OnCreatePauseMenuButtons -= Level_OnCreatePauseMenuButtons;
@@ -128,6 +144,107 @@ public sealed class MiaoNetModule : EverestModule
         SpeedrunToolCompat.Unload();
         BitsboltsCompat.Unload();
     }
+
+    private static void TryInitializeCelesteNetBridge()
+    {
+        EverestModuleMetadata dependency = new()
+        {
+            Name = "CelesteNet.Client",
+            Version = new Version(2, 0, 0)
+        };
+        if (!Everest.Loader.DependencyLoaded(dependency))
+        {
+            Logger.Info(LT.MiaoNet, "CelesteNet not installed, bridge inactive");
+            return;
+        }
+
+        if (!EnsureCelesteNetBridgeResolved())
+            return;
+
+        if (Settings.CelesteNetBridgeEnabled)
+            StartCelesteNetBridge();
+    }
+
+    /// <summary>
+    /// Resolves the bridge entry point. The bridge is a second assembly inside this mod, so every call
+    /// into it goes through reflection.
+    /// </summary>
+    private static bool EnsureCelesteNetBridgeResolved()
+    {
+        if (celesNetBridgeResolved)
+            return celesNetBridgeSetEnabled is not null;
+
+        celesNetBridgeResolved = true;
+        try
+        {
+            Assembly? bridge = AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(assembly => assembly.GetName().Name == "MiaoNetCelesteNetBridge");
+            bridge ??= Assembly.Load("MiaoNetCelesteNetBridge");
+
+            Type? entry = bridge.GetType("MiaoNet.CelesteNetBridge.CelesteNetBridgeEntry");
+            celesNetBridgeSetEnabled = entry?.GetMethod(
+                "SetEnabled", BindingFlags.Public | BindingFlags.Static
+            );
+            celesNetBridgeInitialized = entry?.GetProperty(
+                "Initialized", BindingFlags.Public | BindingFlags.Static
+            );
+            if (celesNetBridgeSetEnabled is null || celesNetBridgeInitialized is null)
+            {
+                Logger.Log(
+                    LogLevel.Error, LT.MiaoNet,
+                    "CelesteNet bridge entry point is incomplete: CelesteNetBridgeEntry needs public statics " +
+                    "SetEnabled(bool) and Initialized"
+                );
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception e)
+        {
+            Logger.Warn(LT.MiaoNet, "Failed to load the CelesteNet bridge: " + e.Message);
+            return false;
+        }
+    }
+
+    private static void StartCelesteNetBridge()
+    {
+        if (celesNetBridgeActive)
+            return;
+
+        try
+        {
+            celesNetBridgeSetEnabled!.Invoke(null, [true]);
+            // The bridge reports for itself: opening the port or installing the hooks can fail.
+            celesNetBridgeActive = (bool)celesNetBridgeInitialized!.GetValue(null)!;
+        }
+        catch (Exception e)
+        {
+            Logger.Warn(LT.MiaoNet, "Failed to start the CelesteNet bridge: " + e.Message);
+        }
+    }
+
+    private static void StopCelesteNetBridge()
+    {
+        if (!celesNetBridgeActive)
+            return;
+
+        try
+        {
+            celesNetBridgeSetEnabled!.Invoke(null, [false]);
+        }
+        catch (Exception e)
+        {
+            Logger.Warn(LT.MiaoNet, "Failed to stop the CelesteNet bridge: " + e.Message);
+        }
+        finally
+        {
+            celesNetBridgeActive = false;
+        }
+    }
+
+    private static void ShutdownCelesteNetBridge()
+        => StopCelesteNetBridge();
 
     public override void LoadContent(bool firstLoad)
     {
