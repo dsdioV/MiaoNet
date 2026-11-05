@@ -99,6 +99,20 @@ public static class CelesteNetBridgeEntry {
     /// the main thread while the player waits, so it bounds a hitch rather than being a real deadline.
     /// </summary>
     private static readonly TimeSpan ShutdownSendTimeout = TimeSpan.FromMilliseconds(500);
+    /// Newest payload of every third-party data type we sent that declared a bound reference, replayed
+    /// to players who join later.
+    /// </summary>
+    /// <remarks>
+    /// CelesteNet calls this a "bound reference": data that describes a player and is meant to be kept
+    /// by the server and handed to anyone who arrives afterwards. Foxeline is the clearest example. It
+    /// sends a player's tail settings once, when that client connects, and tags the packet with
+    /// <c>MetaBoundRef</c>. On a real server, someone who joins an hour later still sees everyone's
+    /// tails, because the server replays the stored bound data to every new session. The bridge has no
+    /// central server, so each client keeps its own copy here and replays it to a peer the first time
+    /// that peer shows up in its map. Without this, late joiners see the mod's default tail even though
+    /// the sender is standing right next to them.
+    /// </remarks>
+    private static readonly CelesteNetBoundRefCache ownBoundRefs = new();
 
     /// <summary>The newest CelesteNet release this bridge was verified against.</summary>
     private static readonly Version TestedCelesteNetVersion = new(2, 4, 2);
@@ -355,6 +369,9 @@ public static class CelesteNetBridgeEntry {
         identityResponsePending = false;
         identityResponseTarget = null;
 
+        // Bound refs are remembered per session: a payload naming the old one would not bind.
+        ownBoundRefs.Clear();
+
         nameTagMirror?.Uninstall();
         nameTagMirror = null;
 
@@ -440,6 +457,12 @@ public static class CelesteNetBridgeEntry {
     }
 
     private static void OnSessionStarted(CelesteNetFakeSession session) {
+        // A new local connection means a new CelesteNet session id. Bound refs are per session and the
+        // real server frees them when a session ends (MetaRef.IsAlive=false), so payloads cached for
+        // the previous id must never be replayed: their ref metas still name the old id, and a bound
+        // ref to an unknown player makes the receiving client drop the connection.
+        ownBoundRefs.Clear();
+
         lock (sessions) {
             sessions.Add(session);
             relayedTypes[session] = [];
@@ -600,6 +623,11 @@ public static class CelesteNetBridgeEntry {
         if (!CelesteNetRelayFilter.IsRelayable(typeId, source, aboutLocalPlayer: true))
             return;
 
+        if (CelesteNetFrameMeta.CarriesBoundRef(frame.Payload)
+            && (source is null || !CelesteNetRelayFilter.UpstreamSources.Contains(source))) {
+            ownBoundRefs.Remember(typeId, frame.Payload);
+        }
+
         if (netMod is null || !MiaoNetNetMods.IsConnected)
             return;
 
@@ -691,6 +719,12 @@ public static class CelesteNetBridgeEntry {
                 string name = RemoteName(sender);
                 QueueSend(session, CelesteNetDataTypes.PlayerInfo(sender, name));
                 Logger.Log(LogLevel.Verbose, "cnet-bridge", $"announce remote #{sender} as {name}");
+
+                // The real server replays a player's stored bound-ref data to every new session. The
+                // peer that just appeared in our map needs ours; sending it here is the other half of
+                // the exchange, so both sides end up with each other's once-only state.
+                if (netMod is not null)
+                    ReplayBoundRefFrames(netMod);
             }
 
             if (FeedOf(session, sender) is not { } feed)
@@ -717,6 +751,34 @@ public static class CelesteNetBridgeEntry {
                 QueueSend(session, CelesteNetFrameRewriter.RewriteSource(held, sender));
                 ReportDelivered(session, CelesteNetRemoteFeed.PlayerFrameTypeId, sender, held.Length);
             }
+        }
+    }
+
+    /// <summary>
+    /// Sends our stored bound-reference frames to a peer that just joined: the bridge's half of
+    /// <c>CelesteNetPlayerSession.ResendPlayerStates</c>. This is what makes "a friend joined later
+    /// and can still see my Foxeline tail" work, even though Foxeline only ever sent that tail once.
+    /// Only data that declared a bound reference is replayed, so event data (a MadHunt round start,
+    /// for example) is never repeated.
+    /// </summary>
+    private static void ReplayBoundRefFrames(NetMod target) {
+        byte[][] frames = ownBoundRefs.Snapshot();
+        if (frames.Length == 0)
+            return;
+
+        try {
+            foreach (byte[] frame in frames)
+                target.Send(new PacketBridgeFrame(frame));
+
+            Logger.Log(
+                LogLevel.Verbose, "cnet-bridge",
+                $"replayed {frames.Length} bound-ref frame(s) to a joining peer"
+            );
+        } catch (Exception e) {
+            Logger.Log(
+                LogLevel.Warn, "cnet-bridge",
+                "bound-ref replay failed: " + e.GetType().Name + ": " + e.Message
+            );
         }
     }
 
@@ -841,6 +903,8 @@ public static class CelesteNetBridgeEntry {
 
         if (!answered)
             return false;
+
+        ReplayBoundRefFrames(target);
 
         identityResponsePending = false;
         identityResponseTarget = null;

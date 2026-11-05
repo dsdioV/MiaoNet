@@ -40,6 +40,10 @@ public sealed class CelesteNetBoundRefCache {
         }
     }
 
+    /// <summary>
+    /// Forgets everything, e.g. when the local CelesteNet session restarts. Bound refs are per session,
+    /// and a payload cached for the old session id would make the receiving client drop the connection.
+    /// </summary>
     public void Clear() {
         lock (gate)
             frames.Clear();
