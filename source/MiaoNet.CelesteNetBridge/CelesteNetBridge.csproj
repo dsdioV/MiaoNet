@@ -7,7 +7,8 @@
     <RootNamespace>MiaoNet.CelesteNetBridge</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Not a standalone mod: do not copy a Mods/<name>_copy folder into the game. -->
+    <!-- Not a standalone mod: do not copy a Mods/<name>_copy folder into the game. The built
+         assembly is placed into MiaoNet's ModFolder by the target below. -->
     <ModAssetsCopyType>none</ModAssetsCopyType>
     <UseCelesteAnalyzer>false</UseCelesteAnalyzer>
     <UseCelestePublicizer>true</UseCelestePublicizer>
@@ -31,6 +32,18 @@
     <None Include="CelesteMod*" Visible="false" />
   </ItemGroup>
 
+  <!-- The bridge is not a mod of its own: it lives inside the MiaoNet container as Code/MiaoNetCelesteNetBridge.dll
+       and is loaded by MiaoNetModule through reflection. -->
+  <Target Name="CopyBridgeIntoMiaoNetMod" AfterTargets="Build">
+    <ItemGroup>
+      <_BridgeOutput Include="$(TargetDir)$(TargetFileName)" />
+      <_BridgeOutput Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(_BridgeOutput)"
+      DestinationFolder="$(MSBuildThisFileDirectory)..\MiaoNet.Client\ModFolder\Code\"
+      SkipUnchangedFiles="true" />
+  </Target>
 
   <Import Project="CelesteMod.targets" />
 </Project>
