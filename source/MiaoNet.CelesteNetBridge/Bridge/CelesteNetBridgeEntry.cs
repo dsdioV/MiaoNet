@@ -25,10 +25,10 @@ namespace MiaoNet.CelesteNetBridge;
 /// </summary>
 public static class CelesteNetBridgeEntry {
 
-    /// <summary>NetMod name declared in the MiaoNet handshake.</summary>
-    private const string NetModName = "MiaoNetCelesteNetBridge";
-
-    /// <summary>Bumped whenever the packet layout below changes.</summary>
+    /// <summary>
+    /// Version of the packet list below. Entries are only ever appended, so adding one keeps this
+    /// number: the first entry still carries local id 1 on both sides.
+    /// </summary>
     private const ushort ProtocolVersion = 1;
 
     private static readonly List<CelesteNetFakeSession> sessions = [];
@@ -71,6 +71,15 @@ public static class CelesteNetBridgeEntry {
     /// soon as our own client sends the missing ones; CelesteNet will not send graphics again by itself.
     /// </summary>
     private static bool identityResponsePending;
+
+    /// <summary>
+    /// The player stream this client declares. It carries the low-frequency player frames and the
+    /// appearance keyframes; third-party frames stay on the legacy stream.
+    /// </summary>
+    private static NetMod? playerStreamMod;
+
+    /// <summary>Set once when an identity request from a peer with no player stream is ignored.</summary>
+    private static bool baseIdentityRequestLogged;
 
     /// <summary>The stream a pending identity answer has to go back on.</summary>
     private static NetMod? identityResponseTarget;
@@ -177,6 +186,33 @@ public static class CelesteNetBridgeEntry {
     }
 
     /// <summary>
+    /// Declares the player stream after the legacy stream, so the legacy packet ids stay 1 and 2 for
+    /// every peer. It carries the low-frequency player frames and the appearance keyframes.
+    /// </summary>
+    /// <remarks>
+    /// Declared with the switch rather than with the takeover: <see cref="MiaoNetNetMods"/> reports every
+    /// registration and unregistration to MiaoNet, which ends the session, because the handshake it
+    /// already sent no longer matches. Declaring it on the frame the session starts would therefore drop
+    /// the session that had just been established, and the reconnect would find the stream in place --
+    /// which is why switching the bridge on used to break the first connection and not the second.
+    /// Nothing is relayed before the bridge is engaged, so declaring it early costs nothing.
+    /// </remarks>
+    private static void RegisterPlayerStream() {
+        if (playerStreamMod is not null)
+            return;
+
+        playerStreamMod = MiaoNetNetMods.Register(new NetMod(
+            KnownNetMods.CelesteNetPlayerSynth,
+            KnownNetMods.CelesteNetPlayerProtocolVersion,
+            NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame),
+            NetModPacketEntry.Create<PacketBridgeIdentityRequest>(PacketScope.Map, OnIdentityRequestOnPlayerStream)
+        ));
+
+        Logger.Log(LogLevel.Info, "cnet-bridge",
+            "player stream: " + KnownNetMods.CelesteNetPlayerSynth);
+    }
+
+    /// <summary>
     /// Installs or clears the resolver through which MiaoNet reaches CelesteNet's ghost for a remote
     /// player. This bridge is the only assembly that may name the CelesteNet type, so MiaoNet asks for
     /// it at runtime; while the bridge is off the resolver stays null and MiaoNet's own ghost is used.
@@ -252,13 +288,19 @@ public static class CelesteNetBridgeEntry {
 
         // The declaration has to exist before the MiaoNet handshake goes out.
         netMod = MiaoNetNetMods.Register(new NetMod(
-            NetModName,
+            KnownNetMods.LegacyBridgeName,
             ProtocolVersion,
             NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame),
             // Appended, never inserted: existing peers index the first entry by local id 1.
-            NetModPacketEntry.Create<PacketBridgeIdentityRequest>(PacketScope.Map, OnIdentityRequest),
+            NetModPacketEntry.Create<PacketBridgeIdentityRequest>(PacketScope.Map, OnIdentityRequestOnBase),
+            // The leave notice is a bridge lifecycle message, not a player frame: every bridge
+            // registers this stream, so it survives whatever the player stream is doing.
             NetModPacketEntry.Create<PacketBridgeLeave>(PacketScope.Map, OnRemoteLeave)
         ));
+
+        // Declared here for the same reason, and after the legacy stream so the legacy packet ids stay
+        // 1 and 2 for every peer.
+        RegisterPlayerStream();
 
         Initialized = true;
         Logger.Log(LogLevel.Info, "cnet-bridge",
@@ -315,13 +357,13 @@ public static class CelesteNetBridgeEntry {
             return;
         }
 
+        // Nothing in here may register or unregister a NetMod: that ends the session that just started.
         Engaged = true;
         UpdateAnchorResolver();
 
         // Entering a map is when identity replay starts to matter: the request sent while still in the
         // menus had nobody in scope, and a peer may have joined this map while we were away.
         MiaoNetModule.PlayerLocationChanged += OnLocalPlayerLocationChanged;
-        UpdateAnchorResolver();
         Logger.Log(LogLevel.Info, "cnet-bridge",
             $"relaying CelesteNet through 127.0.0.1:{server.Port}"
             + (server.UsedFallbackPort ? " (the default port 17230 was busy)" : "")
@@ -371,6 +413,7 @@ public static class CelesteNetBridgeEntry {
 
         // Bound refs are remembered per session: a payload naming the old one would not bind.
         ownBoundRefs.Clear();
+        baseIdentityRequestLogged = false;
 
         nameTagMirror?.Uninstall();
         nameTagMirror = null;
@@ -418,6 +461,10 @@ public static class CelesteNetBridgeEntry {
 
         Disengage();
         Initialized = false;
+
+        // The player stream first: the legacy stream keeps its index 0 for whatever is left.
+        playerStreamMod?.Dispose();
+        playerStreamMod = null;
 
         netMod?.Dispose();
         netMod = null;
@@ -609,8 +656,8 @@ public static class CelesteNetBridgeEntry {
     }
 
     /// <summary>
-    /// The local real client sent something. Anything it sends is about the local player, so a
-    /// playerInfo here is its own record; a remote player's record never comes this way.
+    /// The local real client sent something. Third-party payloads go to the legacy bridge stream;
+    /// player-pipeline payloads go to the one player stream this client declares.
     /// </summary>
     private static void OnLocalFrame(CelesteNetFakeSession session, CelesteNetFrame frame) {
         if (frame.TypeId is not { } typeId)
@@ -620,18 +667,21 @@ public static class CelesteNetBridgeEntry {
 
         string? source = DeclaringSourceOf(typeId);
 
-        if (!CelesteNetRelayFilter.IsRelayable(typeId, source, aboutLocalPlayer: true))
+        CelesteNetFrameLane lane = CelesteNetFrameRouting.Classify(
+            typeId, source, aboutLocalPlayer: true
+        );
+
+        if (lane == CelesteNetFrameLane.Drop)
             return;
 
-        if (CelesteNetFrameMeta.CarriesBoundRef(frame.Payload)
-            && (source is null || !CelesteNetRelayFilter.UpstreamSources.Contains(source))) {
+        if (lane == CelesteNetFrameLane.ThirdParty && CelesteNetFrameMeta.CarriesBoundRef(frame.Payload))
             ownBoundRefs.Remember(typeId, frame.Payload);
-        }
 
-        if (netMod is null || !MiaoNetNetMods.IsConnected)
+        NetMod? target = lane == CelesteNetFrameLane.ThirdParty ? netMod : playerStreamMod;
+        if (target is null || !MiaoNetNetMods.IsConnected)
             return;
 
-        SendRelayed(session, netMod, typeId, frame.Payload);
+        SendRelayed(session, target, typeId, frame.Payload);
     }
 
     private static void SendRelayed(
@@ -818,15 +868,16 @@ public static class CelesteNetBridgeEntry {
 
     /// <summary>
     /// Asks every peer on the same map for its identity frames, once per MiaoNet connection. A request
-    /// that cannot go out yet is simply retried on the next heartbeat.
+    /// that cannot go out yet is simply retried on the next heartbeat. The request travels on the
+    /// player stream this client declared, so only peers that declared the same stream answer it.
     /// </summary>
     private static void RequestPeersIdentity(CelesteNetFakeSession session) {
         CelesteNetIdentityRequester? requester;
         lock (sessions)
             identityRequesters.TryGetValue(session, out requester);
 
-        if (requester is null || netMod is not { } target
-            || !requester.ShouldRequest(session.IsHandshaken, MiaoNetNetMods.IsConnected))
+        NetMod? target = playerStreamMod;
+        if (requester is null || target is null || !requester.ShouldRequest(session.IsHandshaken, true))
             return;
 
         try {
@@ -848,13 +899,37 @@ public static class CelesteNetBridgeEntry {
     }
 
     /// <summary>
+    /// An identity request on the base stream, where peers that declare no player stream ask. Answering
+    /// would give them a ghost that never moves, because our player frames travel on the player stream,
+    /// so the request is ignored and the log names it once.
+    /// </summary>
+    private static void OnIdentityRequestOnBase(PacketEnvelope envelope, PacketBridgeIdentityRequest packet) {
+        if (baseIdentityRequestLogged)
+            return;
+
+        baseIdentityRequestLogged = true;
+        Logger.Log(
+            LogLevel.Verbose, "cnet-bridge",
+            "skip identity request from a peer with no player stream: player frames travel on "
+            + KnownNetMods.CelesteNetPlayerSynth
+        );
+    }
+
+    /// <summary>An identity request on the player stream this client declared: answer on that stream.</summary>
+    private static void OnIdentityRequestOnPlayerStream(PacketEnvelope envelope, PacketBridgeIdentityRequest packet) {
+        if (playerStreamMod is not { } target)
+            return;
+
+        OnIdentityRequest(envelope, packet, target);
+    }
+
+    /// <summary>
     /// A peer joined the map after we did and asks who we are. Answer with the cached frames, or wait for
     /// our own client to send the missing ones: it will not send graphics again unless they change.
     /// </summary>
-    private static void OnIdentityRequest(PacketEnvelope envelope, PacketBridgeIdentityRequest packet) {
-        if (netMod is not { } target)
-            return;
-
+    private static void OnIdentityRequest(
+        PacketEnvelope envelope, PacketBridgeIdentityRequest packet, NetMod target
+    ) {
         identityResponsePending = true;
         identityResponseTarget = target;
         if (!TryAnswerIdentityRequest(target)) {
