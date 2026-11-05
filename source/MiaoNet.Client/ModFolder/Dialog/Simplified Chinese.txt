@@ -30,6 +30,8 @@ miaonet_options_cnet_bridge_tip=
 	关闭时 CelesteNet 完全不受影响。
 	但无论开关如何，MiaoNet 与 CelesteNet 不能同时连接：
 	连上其中一个会自动断开另一个。
+	警告：开启后，玩家交互改由 CelesteNet 负责。
+	你将无法与未开启此选项的玩家互相抓取。
 
 miaonet_cnet_took_over_message= 检测到 CelesteNet 已连接，MiaoNet 已自动断开。
 miaonet_cnet_bridge_off_message= CelesteNet 已断开，接管 CelesteNet 连接已自动关闭。
