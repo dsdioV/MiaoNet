@@ -252,7 +252,59 @@ public sealed class CelesteNetFrameSynthesizerTests
 {
     private const uint PlayerID = 9;
 
+    private static readonly CelesteNetColor TemplateTint = new(0xF8, 0x00, 0x00);
+    private static readonly CelesteNetColor TemplateHair = new(0x00, 0xF8, 0x00);
+    private static readonly CelesteNetColor TemplateFollowerColor = new(10, 20, 30, 255);
     private const string TemplateHairTexture = "characters/player/bangs3";
+    private const string FollowerSprite = "collectables/strawberry";
+
+    [TestMethod]
+    public void AppearanceTemplateStylesTheFrameAndMotionComesFromTheInput()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        CelesteNetPlayerFrameInput input = NewInput() with {
+            PositionX = 100f,
+            PositionY = 50f,
+            AnimationName = "walk",
+            AnimationFrame = 12,
+            FacingLeft = true,
+            Followers = [new(FollowerSprite, "idle", 3)],
+            Holdable = new() { Kind = CelesteNetHoldableKind.Theo, OffsetX = 2f, OffsetY = -8f },
+        };
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, input);
+
+        Assert.AreEqual(PlayerID, frame.PlayerID);
+        Assert.AreEqual(100f, frame.PositionX);
+        Assert.AreEqual(50f, frame.PositionY);
+        Assert.IsTrue(frame.FacingLeft);
+        Assert.IsTrue(frame.HairSimulateMotion);
+        Assert.AreEqual(1, frame.AnimationID, "MiaoNet's animation name walks through the graphics table.");
+        Assert.AreEqual(12, frame.AnimationFrame);
+        Assert.AreEqual(TemplateTint.Pack(), frame.Color.Pack(), "The sprite tint comes from the template.");
+        Assert.HasCount(4, frame.HairColors);
+        Assert.AreEqual(TemplateHair.Pack(), frame.HairColors[0].Pack());
+        Assert.AreEqual(TemplateHairTexture, frame.HairTexture0);
+        Assert.IsFalse(frame.Dead);
+        Assert.IsFalse(frame.Dashing);
+
+        Assert.HasCount(1, frame.Followers);
+        Assert.AreEqual(FollowerSprite, frame.Followers[0].SpriteID);
+        Assert.AreEqual("idle", frame.Followers[0].AnimationID);
+        Assert.AreEqual(3, frame.Followers[0].AnimationFrame);
+        Assert.AreEqual(TemplateFollowerColor, frame.Followers[0].Color, "Follower styling comes from the template.");
+        Assert.AreEqual(42, frame.Followers[0].Depth);
+
+        Assert.IsNotNull(frame.Holding);
+        Assert.AreEqual("theo_crystal", frame.Holding.SpriteID);
+        Assert.AreEqual(2f, frame.Holding.OffsetX);
+        Assert.AreEqual(-8f, frame.Holding.OffsetY);
+        Assert.AreEqual(44, frame.Holding.Depth);
+        Assert.AreEqual("idle", frame.Holding.AnimationID);
+    }
 
     [TestMethod]
     public void UnknownAnimationNameKeepsTheCurrentAnimation()
@@ -423,6 +475,21 @@ public sealed class CelesteNetFrameSynthesizerTests
     }
 
     [TestMethod]
+    public void StaleHairColorTemplateIsReplacedWhenTheHairCountChanges()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance(hairLength: 4));
+        // The sender gained a dash: its graphics now says five segments, the template still has four.
+        synthesizer.AcceptGraphics(PlayerID, Graphics(hairCount: 5, hairTextures: [TemplateHairTexture]));
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, NewInput() with { Dashes = 1 });
+
+        CelesteNetColor dash1 = new(0xAC, 0x32, 0x32);
+        Assert.HasCount(5, frame.HairColors);
+        Assert.AreEqual(dash1.Pack(), frame.HairColors[0].Pack());
+    }
+
+    [TestMethod]
     public void HeldItemsCelesteNetCannotExpressAreOmitted()
     {
         CelesteNetFrameSynthesizer synthesizer = new();
@@ -475,6 +542,175 @@ public sealed class CelesteNetFrameSynthesizerTests
     }
 
     [TestMethod]
+    public void ChangedAppearanceBecomesAKeyframe()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+
+        Assert.IsTrue(synthesizer.IsAppearanceKeyframePending(PlayerID));
+        Assert.IsTrue(synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out CelesteNetPlayerFrame? keyframe));
+        Assert.IsNotNull(keyframe);
+        Assert.AreEqual(TemplateHairTexture, keyframe.HairTexture0);
+        Assert.IsFalse(synthesizer.IsAppearanceKeyframePending(PlayerID));
+        Assert.IsFalse(
+            synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out _),
+            "Taking the keyframe clears it; a second call must not repeat it."
+        );
+    }
+
+    [TestMethod]
+    public void DynamicFieldsDoNotQueueAnAppearanceKeyframe()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        Assert.IsTrue(synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out _));
+
+        CelesteNetPlayerFrame moved = TemplateAppearance();
+        moved.PositionX = 120f;
+        moved.PositionY = -4f;
+        moved.ScaleX = 0.75f;
+        moved.ScaleY = 1.5f;
+        moved.FacingLeft = true;
+        moved.SpeedX = 40f;
+        moved.SpeedY = -12f;
+        moved.AnimationID = 3;
+        moved.AnimationFrame = 9;
+        moved.Dead = true;
+        moved.HairSimulateMotion = true;
+        moved.DashWasB = true;
+
+        synthesizer.AcceptAppearance(PlayerID, moved);
+
+        Assert.IsFalse(
+            synthesizer.IsAppearanceKeyframePending(PlayerID),
+            "Only the appearance projection decides a keyframe, not the per-tick fields."
+        );
+    }
+
+    [TestMethod]
+    public void EveryAppearanceFieldChangeQueuesAKeyframe()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        Assert.IsTrue(synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out _));
+
+        CelesteNetPlayerFrame hairChanged = TemplateAppearance();
+        hairChanged.HairColors = [
+            new CelesteNetColor(1, 2, 3),
+            new CelesteNetColor(1, 2, 3),
+            new CelesteNetColor(1, 2, 3),
+            new CelesteNetColor(1, 2, 3),
+        ];
+
+        CelesteNetPlayerFrame textureChanged = TemplateAppearance();
+        textureChanged.HairTexture0 = "characters/player/bangs4";
+
+        CelesteNetPlayerFrame tintChanged = TemplateAppearance();
+        tintChanged.Color = new CelesteNetColor(7, 8, 9);
+
+        CelesteNetPlayerFrame followerChanged = TemplateAppearance();
+        followerChanged.Followers[0].Depth = 99;
+
+        CelesteNetPlayerFrame holdingChanged = TemplateAppearance();
+        if (holdingChanged.Holding is { } held)
+            held.Depth = 77;
+
+        (CelesteNetPlayerFrame Frame, string Reason)[] changes = [
+            (hairChanged, "hair colors"),
+            (textureChanged, "hair texture"),
+            (tintChanged, "sprite tint"),
+            (followerChanged, "follower styling"),
+            (holdingChanged, "holding styling"),
+        ];
+
+        foreach ((CelesteNetPlayerFrame frame, string reason) in changes)
+        {
+            synthesizer.AcceptAppearance(PlayerID, frame);
+            Assert.IsTrue(
+                synthesizer.IsAppearanceKeyframePending(PlayerID),
+                $"A change of {reason} must queue an appearance keyframe."
+            );
+
+            Assert.IsTrue(synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out CelesteNetPlayerFrame? keyframe));
+            Assert.IsNotNull(keyframe);
+        }
+    }
+
+    [TestMethod]
+    public void AppearanceKeyframeSurvivesTransientResetButNotTombstone()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+
+        synthesizer.ResetTransientState();
+        Assert.IsTrue(
+            synthesizer.IsAppearanceKeyframePending(PlayerID),
+            "A map change only forgets motion state; the appearance is still due."
+        );
+
+        synthesizer.Tombstone(PlayerID);
+        Assert.IsFalse(synthesizer.IsAppearanceKeyframePending(PlayerID));
+        Assert.IsFalse(
+            synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out _),
+            "A tombstoned player's cached appearance must not be able to resurrect it."
+        );
+
+        // A late real frame from a departed peer must not start the cache again either.
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        Assert.IsFalse(synthesizer.IsAppearanceKeyframePending(PlayerID));
+    }
+
+    [TestMethod]
+    public void MarkAppearanceKeyframesPendingResendsKnownAppearances()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        Assert.IsTrue(synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out _));
+        Assert.IsFalse(synthesizer.IsAppearanceKeyframePending(PlayerID));
+
+        synthesizer.MarkAppearanceKeyframesPending();
+
+        Assert.IsTrue(synthesizer.IsAppearanceKeyframePending(PlayerID));
+        Assert.IsTrue(synthesizer.TryTakeAppearanceKeyframe(PlayerID, 0, 0, out _));
+    }
+
+    [TestMethod]
+    public void ResetTransientStateKeepsTheAppearanceTemplate()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+        synthesizer.SetDead(PlayerID, true);
+
+        synthesizer.ResetTransientState();
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, NewInput());
+        Assert.AreEqual(TemplateTint.Pack(), frame.Color.Pack());
+        Assert.AreEqual(TemplateHair.Pack(), frame.HairColors[0].Pack());
+        Assert.AreEqual(TemplateHairTexture, frame.HairTexture0);
+        Assert.IsFalse(frame.Dead, "A map change forgets the death flag.");
+    }
+
+    [TestMethod]
+    public void RoomChangeKeepsTheAppearanceTemplateAndDropsTheQueuedFrame()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+        Assert.IsTrue(synthesizer.Queue(NewInput() with { PositionX = 5f }, 5));
+
+        synthesizer.ResetTransientState(PlayerID);
+
+        Assert.IsEmpty(
+            synthesizer.Drain(6),
+            "A frame captured in the room before the change must not cross into the new room."
+        );
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, NewInput());
+        Assert.AreEqual(TemplateHair.Pack(), frame.HairColors[0].Pack());
+    }
+
+    [TestMethod]
     public void DeadStartsFalseAndFollowsTheLiveStateEdges()
     {
         CelesteNetFrameSynthesizer synthesizer = new();
@@ -490,6 +726,53 @@ public sealed class CelesteNetFrameSynthesizerTests
 
         synthesizer.SetDead(PlayerID, false);
         Assert.IsFalse(SynthesiseOne(synthesizer, NewInput() with { PositionX = 2f }).Dead);
+    }
+
+    [TestMethod]
+    public void RespawnClearsDeadAndDoesNotReplayTheTemplateDashKind()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        CelesteNetPlayerFrame appearance = TemplateAppearance();
+        appearance.DashWasB = true;
+        synthesizer.AcceptAppearance(PlayerID, appearance);
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+
+        synthesizer.SetDead(PlayerID, true);
+        Assert.IsTrue(SynthesiseOne(synthesizer, NewInput()).Dead);
+
+        // The bridge handles Respawn as: dead = false, then forget the old room's motion state.
+        synthesizer.SetDead(PlayerID, false);
+        synthesizer.ResetTransientState(PlayerID);
+
+        CelesteNetPlayerFrame respawned = SynthesiseOne(
+            synthesizer,
+            NewInput() with { Dashing = true, Dashes = 0 }
+        );
+
+        Assert.IsFalse(respawned.Dead);
+        Assert.IsFalse(
+            respawned.DashWasB,
+            "The old template's dash kind must not leak into the respawned player."
+        );
+    }
+
+    [TestMethod]
+    public void LevelChangeDropsQueuedFramesAndKeepsTheTemplate()
+    {
+        CelesteNetFrameSynthesizer synthesizer = new();
+        synthesizer.AcceptAppearance(PlayerID, TemplateAppearance());
+        synthesizer.AcceptGraphics(PlayerID, Graphics());
+        Assert.IsTrue(synthesizer.Queue(NewInput() with { PositionX = 5f }, 5));
+
+        // What CelesteNetBridgeEntry does when our own player changes level.
+        synthesizer.ClearPending();
+        synthesizer.ResetTransientState();
+
+        Assert.IsEmpty(synthesizer.Drain(6), "A frame from the previous level must not be emitted.");
+
+        CelesteNetPlayerFrame frame = SynthesiseOne(synthesizer, NewInput());
+        Assert.AreEqual(TemplateHair.Pack(), frame.HairColors[0].Pack());
+        Assert.IsFalse(frame.Dead);
     }
 
     private static CelesteNetPlayerFrame SynthesiseOne(CelesteNetFrameSynthesizer synthesizer, CelesteNetPlayerFrameInput input)
@@ -515,6 +798,38 @@ public sealed class CelesteNetFrameSynthesizerTests
         DeltaSeconds = 1f / 60f,
     };
 
+    private static CelesteNetPlayerFrame TemplateAppearance(int hairLength = 4)
+    {
+        CelesteNetColor[] hair = new CelesteNetColor[hairLength];
+        Array.Fill(hair, TemplateHair);
+        return new() {
+            PlayerID = PlayerID,
+            Color = TemplateTint,
+            HairColors = hair,
+            HairTexture0 = TemplateHairTexture,
+            Followers = [
+                new() {
+                    Color = TemplateFollowerColor,
+                    Depth = 42,
+                    ScaleX = 1f,
+                    ScaleY = 1f,
+                    SpriteRate = 1f,
+                    SpriteID = FollowerSprite,
+                    AnimationID = "idle",
+                },
+            ],
+            Holding = new() {
+                Color = new(1, 2, 3, 4),
+                Depth = 44,
+                ScaleX = 1f,
+                ScaleY = 1f,
+                SpriteRate = 1f,
+                SpriteID = "theo_crystal",
+                AnimationID = "idle",
+            },
+        };
+    }
+
     private static CelesteNetPlayerGraphics Graphics(int hairCount = 4, string[]? hairTextures = null)
     {
         byte[] payload = CelesteNetTestPayloads.PlayerGraphics(
@@ -531,6 +846,10 @@ public sealed class CelesteNetFrameSynthesizerTests
     }
 }
 
+/// <summary>
+/// Builds <c>playerGraphics</c> payloads by hand, since the bridge never writes that frame and
+/// therefore has no encoder for it.
+/// </summary>
 internal static class CelesteNetTestPayloads
 {
     private const string Source = "CelesteNet.Shared";
