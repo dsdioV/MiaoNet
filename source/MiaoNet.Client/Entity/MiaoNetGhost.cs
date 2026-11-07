@@ -694,7 +694,14 @@ public sealed class MiaoNetGhost : MiaoNetGhostEntity
 
     private void UpdateCollidable()
     {
-        Collidable = Interactions && MiaoNetModule.Settings.PlayerInteractions && !OnlinePlayer.IsPaused;
+        // With the bridge on, this body is only a fallback for players CelesteNet cannot render (no
+        // CelesteNet, or their bridge is off), and CelesteNet owns interactions for everyone else. Two
+        // clients must never grab each other through two different systems, so this body is not
+        // collidable at all: the player stays visible, but cannot be grabbed or stood on.
+        Collidable = Interactions
+            && MiaoNetModule.Settings.PlayerInteractions
+            && !MiaoNetModule.IsCelesteNetBridgeActive
+            && !OnlinePlayer.IsPaused;
     }
 
     private void PrepareHoldableSprite(HoldableType type)
