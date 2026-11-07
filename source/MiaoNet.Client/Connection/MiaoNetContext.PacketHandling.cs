@@ -92,7 +92,11 @@ partial class MiaoNetContext
         }
         else
         {
-            Logger.Warn(LT.MiaoNetSync, $"Received a frame notification for {player.Info}, but there is no initial state.");
+            // Per-frame data for a player whose initial state we were never sent: while we are still
+            // joining the map, or just after a room change, the state packet and the frames race each
+            // other and the frames simply arrive first. CelesteNet drops the same frames the same way;
+            // the first frame after the state arrives is the one that matters, so this is not a fault.
+            Logger.Debug(LT.MiaoNetSync, $"Dropped a frame from {player.Info}: no initial state yet.");
             return;
         }
         GetFrameQueue(player.ID).Enqueue(packet.StateDelta);
