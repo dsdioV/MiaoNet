@@ -7,6 +7,7 @@ public sealed class GhostNameTag : MiaoNetEntity
     public bool IsOnSelf { get; }
 
     private readonly Func<Entity?>? targetResolver;
+    private readonly int onlinePlayerId;
     private Entity? entity;
 
     /// <summary>
@@ -22,19 +23,36 @@ public sealed class GhostNameTag : MiaoNetEntity
 
     public string Text { get; }
 
+    /// <summary>
+    /// The name as the player sees it right now: <see cref="Text"/> plus anything a mod added to it.
+    /// Resolved on every frame rather than at construction, because a mod can change it at any time
+    /// and the tag outlives that.
+    /// </summary>
+    private string CurrentText
+        => RemoteNameTagSuffix.Get(IsOnSelf ? RemoteNameTagSuffix.SelfKey : onlinePlayerId) is { } suffix
+            ? Text + suffix
+            : Text;
+
     public Color Color { get; }
 
-    private GhostNameTag(Entity? entity, Func<Entity?>? targetResolver, string text, Color color)
+    private GhostNameTag(Entity? entity, Func<Entity?>? targetResolver, string text, Color color, int onlinePlayerId)
     {
         Tag = MiaoNetTag.Hud;
         this.entity = entity;
         this.targetResolver = targetResolver;
+        this.onlinePlayerId = onlinePlayerId;
         Text = text;
         Color = color;
     }
 
     private GhostNameTag(Entity? entity, Func<Entity?>? targetResolver, OnlinePlayer onlinePlayer, bool avatar)
-        : this(entity, targetResolver, onlinePlayer.GetDisplayName(true, avatar), onlinePlayer.Info.Color)
+        : this(
+            entity,
+            targetResolver,
+            onlinePlayer.GetDisplayName(true, avatar),
+            onlinePlayer.Info.Color,
+            onlinePlayer.ID
+        )
     {
     }
 
@@ -86,9 +104,11 @@ public sealed class GhostNameTag : MiaoNetEntity
         Vector2 position = SceneAs<Level>().WorldToScreen(worldPosition);
         if (upsideDown)
             position.Y = Celeste.TargetHeight - position.Y;
+        string text = CurrentText;
+
         Vector2 clampedPosition = ScreenClamper.ClampIntoScreen(
             position,
-            MiaoNetFont.Measure(Text) * scale,
+            MiaoNetFont.Measure(text) * scale,
             justify,
             Margin
         );
@@ -104,7 +124,7 @@ public sealed class GhostNameTag : MiaoNetEntity
                     Vector2.DistanceSquared(position, clampedPosition) / (FadeRadius * FadeRadius)
                 );
         MiaoNetFont.DrawOutline(
-            Text,
+            text,
             clampedPosition,
             justify,
             Vector2.One * scale,
