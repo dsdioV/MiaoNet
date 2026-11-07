@@ -20,6 +20,11 @@ public sealed class CelesteNetFakeSession : IDisposable {
     private int disposed;
 
     /// <summary>
+    /// Whether the extra <c>ready</c> has already been sent. See <see cref="SendReadyAgainAsync"/>.
+    /// </summary>
+    private int readySentAgain;
+
+    /// <summary>
     /// Type ids already reported. The client sends player frames at tick rate, so naming each kind
     /// once is what makes the log readable while still proving that the frame is coming through.
     /// </summary>
@@ -146,6 +151,36 @@ public sealed class CelesteNetFakeSession : IDisposable {
         Log($"sent {name} ({payload.Length} B)");
     }
 
+    /// <summary>
+    /// Sends <c>ready</c> a second time, once the client has proved it can send.
+    /// <para>
+    /// The startup sequence goes out back to back, and the client starts reading it before
+    /// <c>CelesteNetClient.Con</c> is assigned: <c>CelesteNetClient.cs:234</c> assigns the field only
+    /// after <c>Handshake.DoConnectionHandshake</c> returns, while the receive thread is already
+    /// running from <c>CelesteNetClientTCPUDPConnection.cs:59-67</c>. When <c>ready</c> is dispatched
+    /// inside that window, every mod handler that answers <c>DataReady</c> with a send hits
+    /// <c>CelesteNetClient.Send</c> (<c>CelesteNetClient.cs:302-305</c>), whose <c>Con?.Send</c> does
+    /// nothing at all: no exception, no log. Foxeline sends its tail settings only there, so its
+    /// payload never left the process and the peers kept their defaults.
+    /// </para>
+    /// <para>
+    /// The real server has no such window because it sends <c>DataReady</c> last
+    /// (<c>CelesteNetPlayerSession.cs:309-310</c>). The client's own handling of <c>DataReady</c> is
+    /// just <c>_ReadyEvent.Set()</c> (<c>CelesteNetClient.cs:352-354</c>), which is idempotent, so a
+    /// second one is harmless. What makes it safe to send now is that the client has just sent a
+    /// frame of its own: any outbound frame implies <c>Con != null</c>, because the connection object
+    /// queues through itself while <c>Con</c> is only assigned afterwards
+    /// (<c>CelesteNetClient.cs:219-228</c> starts the heartbeat timer before <c>:234</c>).
+    /// </para>
+    /// </summary>
+    private async Task SendReadyAgainAsync(CancellationToken token) {
+        if (Interlocked.Exchange(ref readySentAgain, 1) != 0)
+            return;
+
+        await SendAsync(CelesteNetDataTypes.Ready(), token).ConfigureAwait(false);
+        Log("sent ready a second time (the client has sent a frame, so Con is assigned)");
+    }
+
     private async Task KeepAliveLoopAsync(CancellationToken token) {
         byte[] frame = CelesteNetFraming.Wrap(CelesteNetDataTypes.KeepAlive());
         while (!token.IsCancellationRequested) {
@@ -183,6 +218,10 @@ public sealed class CelesteNetFakeSession : IDisposable {
                 var frame = new CelesteNetFrame(CelesteNetTypeReader.TryReadTypeId(payload), payload);
                 if (loggedTypes.Add(frame.TypeId ?? "<unparsed>"))
                     Log($"frame {frame.TypeId ?? "<unparsed>"} ({payload.Length} B)");
+
+                // See SendReadyAgainAsync: the first frame proves the client can send, which means
+                // every DataReady handler that wanted to send could not do so until now.
+                await SendReadyAgainAsync(token).ConfigureAwait(false);
                 try {
                     FrameReceived?.Invoke(this, frame);
                 } catch (Exception e) {

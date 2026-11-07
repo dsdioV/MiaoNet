@@ -92,6 +92,53 @@ public class CelesteNetFakeServerTests {
         CollectionAssert.AreEqual(payload, frame.Payload);
     }
 
+    /// <summary>
+    /// The startup sequence is written before the client can send anything, and the client drops a
+    /// <c>ready</c> that lands before <c>CelesteNetClient.Con</c> is assigned: every mod handler that
+    /// answers <c>DataReady</c> with a send then silently sends nothing. The fake server therefore
+    /// repeats <c>ready</c> once the client has proved it can send, and only once.
+    /// </summary>
+    [TestMethod]
+    public async Task RepeatsReadyOnceAfterTheClientStartsSending() {
+        using CelesteNetFakeServer server = StartServer();
+        using CelesteNetTestClient client = new(server.Port);
+
+        await client.HandshakeAsync();
+        for (int i = 0; i < 4; i++)
+            await client.ReceiveAsync();
+
+        await client.SendAsync(CelesteNetDataTypes.Encode(0, "firstFrame", [1]));
+
+        Assert.AreEqual("ready", await ReceiveTypeIdAsync(client, "ready", TimeSpan.FromSeconds(5)));
+
+        // Any further frame from the client must not produce another ready.
+        await client.SendAsync(CelesteNetDataTypes.Encode(0, "secondFrame", [2]));
+
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(700);
+        while (DateTime.UtcNow < deadline) {
+            byte[] frame;
+            try {
+                frame = await client.ReceiveAsync(deadline - DateTime.UtcNow);
+            } catch (Exception e) when (e is TimeoutException or OperationCanceledException) {
+                break;
+            }
+
+            Assert.AreNotEqual("ready", CelesteNetTypeReader.TryReadTypeId(frame), "sent a second extra ready");
+        }
+    }
+
+    private static async Task<string?> ReceiveTypeIdAsync(CelesteNetTestClient client, string expected, TimeSpan timeout) {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline) {
+            byte[] frame = await client.ReceiveAsync(deadline - DateTime.UtcNow);
+            if (CelesteNetTypeReader.TryReadTypeId(frame) == expected)
+                return expected;
+        }
+
+        Assert.Fail($"never received {expected}");
+        return null;
+    }
+
     [TestMethod]
     public async Task SessionIsMarkedClosedWhenTheClientDisconnects() {
         TaskCompletionSource<bool> closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
