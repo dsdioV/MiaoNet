@@ -73,6 +73,12 @@ public static class CelesteNetBridgeEntry {
     /// </summary>
     private static readonly Dictionary<CelesteNetFakeSession, Task> sendTails = [];
 
+    /// <summary>
+    /// How long <see cref="Shutdown"/> waits for the leave frames to reach the local client. This runs on
+    /// the main thread while the player waits, so it bounds a hitch rather than being a real deadline.
+    /// </summary>
+    private static readonly TimeSpan ShutdownSendTimeout = TimeSpan.FromMilliseconds(500);
+
     /// <summary>The newest CelesteNet release this bridge was verified against.</summary>
     private static readonly Version TestedCelesteNetVersion = new(2, 4, 2);
 
@@ -236,6 +242,10 @@ public static class CelesteNetBridgeEntry {
             watchedContext.ClientInitialized -= OnMiaoNetClientInitialized;
             watchedContext = null;
         }
+
+        // Before anything is torn down: a peer that is never told keeps the last ghost it saw, frozen in
+        // place and still grabbable. The frames have to be written while the stream is still up.
+        AnnounceEveryoneLeftBeforeShutdown();
 
         ResetRedirect();
         Quiesce();
@@ -673,16 +683,24 @@ public static class CelesteNetBridgeEntry {
         lock (sessions)
             targets = [.. sessions];
 
-        foreach (CelesteNetFakeSession session in targets) {
-            if (!ForgetIntroduced(session, id))
-                continue;
+        foreach (CelesteNetFakeSession session in targets)
+            AnnouncePlayerLeft(session, id, "left CelesteNet");
+    }
 
-            ForgetFeed(session, id);
-            if (session.IsHandshaken)
-                QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
+    /// <summary>
+    /// Removes one remote player from what the local real client knows: the ghost-birth gate, the
+    /// silence timer, and then the dead <c>playerInfo</c> that makes the client drop the ghost.
+    /// </summary>
+    /// <param name="reason">Only used for the log line.</param>
+    private static void AnnouncePlayerLeft(CelesteNetFakeSession session, uint id, string reason) {
+        if (!ForgetIntroduced(session, id))
+            return;
 
-            Logger.Log(LogLevel.Verbose, "cnet-bridge", $"announced that #{id} left CelesteNet");
-        }
+        ForgetFeed(session, id);
+        if (session.IsHandshaken)
+            QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
+
+        Logger.Log(LogLevel.Verbose, "cnet-bridge", $"announced that #{id} {reason}");
     }
 
     /// <summary>
@@ -708,6 +726,46 @@ public static class CelesteNetBridgeEntry {
 
         if (ids.Length > 0)
             Logger.Log(LogLevel.Info, "cnet-bridge", $"MiaoNet went away, announced {ids.Length} players as left");
+    }
+
+    /// <summary>
+    /// The bridge is being turned off, and the peers have no other way to learn that: they keep the last
+    /// ghost they saw, frozen in place and still grabbable, because the local client's grab is a purely
+    /// local behaviour. Say goodbye while the stream is still open, and give the writes a moment to land
+    /// before the session goes away underneath them.
+    /// </summary>
+    private static void AnnounceEveryoneLeftBeforeShutdown() {
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        int announced = 0;
+        foreach (CelesteNetFakeSession session in targets) {
+            lock (sessions) {
+                if (introducedPlayers.TryGetValue(session, out HashSet<uint>? introduced))
+                    announced += introduced.Count;
+            }
+
+            AnnounceEveryoneLeft(session);
+        }
+
+        if (announced == 0)
+            return;
+
+        Logger.Log(
+            LogLevel.Info, "cnet-bridge",
+            $"bridge is shutting down, told peers that {announced} players left"
+        );
+
+        Task[] tails;
+        lock (sessions)
+            tails = [.. sendTails.Values];
+
+        try {
+            Task.WaitAll(tails, ShutdownSendTimeout);
+        } catch (Exception) {
+            // Nothing left to tell anybody if a write fails; the session is going away regardless.
+        }
     }
 
     /// <summary>
@@ -739,16 +797,8 @@ public static class CelesteNetBridgeEntry {
         lock (sessions)
             targets = [.. sessions];
 
-        foreach (CelesteNetFakeSession session in targets) {
-            if (!ForgetIntroduced(session, id))
-                continue;
-
-            ForgetFeed(session, id);
-            if (session.IsHandshaken)
-                QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
-        }
-
-        Logger.Log(LogLevel.Verbose, "cnet-bridge", $"#{id} left our map, announced them as gone");
+        foreach (CelesteNetFakeSession session in targets)
+            AnnouncePlayerLeft(session, id, "left our map");
     }
 
     private static bool IsSharingOurMap(OnlinePlayer player) {
