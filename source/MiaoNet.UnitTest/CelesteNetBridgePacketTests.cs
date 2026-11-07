@@ -37,6 +37,24 @@ public class CelesteNetBridgePacketTests {
     }
 
     [TestMethod]
+    public void LeaveNoticeIsAnEmptyRoundTrippablePacket() {
+        // Empty for the same reason as the identity request: the MiaoNet envelope names the sender, and
+        // what the receiver does with it is the same dead playerInfo any other leave produces.
+        var leave = new PacketBridgeLeave();
+        ByteArrayBufferWriter buffer = new();
+        var writer = new RefBinaryWriter(buffer);
+        leave.Serialize(ref writer, null!);
+        writer.Flush();
+
+        Assert.AreEqual(0, buffer.WrittenSpan.Length, "the leave notice has no body");
+
+        var reader = new RefBinaryReader(buffer.WrittenSpan);
+        PacketBridgeLeave result = PacketBridgeLeave.Deserialize(ref reader, null!);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0, reader.BytesLeft);
+    }
+
+    [TestMethod]
     public void PreservesArbitraryCelesteNetPayloadsByteForByte() {
         byte[] payload = CelesteNetDataTypes.Encode(
             0,

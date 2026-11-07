@@ -33,6 +33,7 @@
     <!-- Only the packets: the rest of Bridge/ needs Celeste, these files do not. -->
     <Compile Include="..\MiaoNet.CelesteNetBridge\Bridge\PacketBridgeFrame.cs" LinkBase="0-Shared/CelesteNetBridge/Bridge" />
     <Compile Include="..\MiaoNet.CelesteNetBridge\Bridge\PacketBridgeIdentityRequest.cs" LinkBase="0-Shared/CelesteNetBridge/Bridge" />
+    <Compile Include="..\MiaoNet.CelesteNetBridge\Bridge\PacketBridgeLeave.cs" LinkBase="0-Shared/CelesteNetBridge/Bridge" />
   </ItemGroup>
 
   <ItemGroup>
