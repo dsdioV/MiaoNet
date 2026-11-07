@@ -60,8 +60,10 @@ public sealed partial class MainComponent
 
             if (bridgeActive)
             {
-                // Wall-clock seconds: DeltaTime is scaled by game speed and time rate modifiers.
-                float waited = fallbackGhostTimers.GetValueOrDefault(player.ID) + Engine.RawDeltaTime;
+                // Game seconds rather than wall-clock: a CelesteNet ghost is created from a network
+                // packet, so a wall-clock timer would keep running while the game is paused and could
+                // drop a second body on top of the real one right after the player unpauses.
+                float waited = fallbackGhostTimers.GetValueOrDefault(player.ID) + Engine.DeltaTime;
                 fallbackGhostTimers[player.ID] = waited;
                 if (waited < FallbackGhostDelay)
                 {
@@ -99,10 +101,20 @@ public sealed partial class MainComponent
         MiaoNetGhost ghost = new(player, context.ShowAvatar);
         ghosts[player.ID] = ghost;
         level.Add(ghost);
-        Logger.Debug(
-            LT.MiaoNet,
-            $"Created a body for {player.Info}: no CelesteNet ghost is rendering them."
-        );
+        if (MiaoNetModule.IsCelesteNetBridgeActive)
+        {
+            // Only worth a line when CelesteNet could have drawn them but did not: that is the
+            // symptom to look for when a teammate stays invisible.
+            Logger.Log(
+                LogLevel.Verbose, LT.MiaoNet,
+                $"Created a fallback body for {player.Info}: CelesteNet has no ghost for them yet."
+            );
+        }
+        else
+        {
+            // With no bridge, MiaoNet's ghost is the only body there is. Nothing went wrong.
+            Logger.Debug(LT.MiaoNet, $"Created a body for {player.Info}.");
+        }
     }
 
     private void RemoveGhost(Level level, int playerId, string who)
