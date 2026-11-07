@@ -18,9 +18,16 @@ namespace MiaoNet.CelesteNetBridge;
 internal sealed class CelesteNetSuppression {
 
     /// <summary>Components whose Init() is skipped entirely: never Enabled, never register handlers.</summary>
+    /// <remarks>
+    /// The player list is deliberately not here. Skipping its Init leaves its <c>Channels</c> field null
+    /// forever, because that field is filled by its <c>DataChannelList</c> handler, and that handler only
+    /// exists once Init has registered it. Third-party mods read the field: PvPDash, for one, compares the
+    /// current channel name against it on every team update and crashes the whole receive thread on null.
+    /// Letting the component initialize costs nothing visible: it only draws while its hotkey has been
+    /// pressed, and <see cref="CelesteNetGameComponent.Draw"/> is suppressed either way.
+    /// </remarks>
     private static readonly Type[] SkipInitTypes = [
         typeof(CelesteNetChatComponent),
-        typeof(CelesteNetPlayerListComponent),
         typeof(CelesteNetEmoteComponent),
         typeof(CelesteNetStatusComponent),
         typeof(CelesteNetDebugMapComponent),
