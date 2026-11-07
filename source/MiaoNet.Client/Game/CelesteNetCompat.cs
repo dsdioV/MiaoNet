@@ -39,7 +39,15 @@ internal static class CelesteNetCompat {
     private static PropertyInfo? connectedProperty;
     private static PropertyInfo? wantsToBeConnectedProperty;
     private static PropertyInfo? serverOverrideProperty;
+    private static PropertyInfo? sessionProperty;
+    private static PropertyInfo? interactionsOverrideProperty;
     private static MethodInfo? stopMethod;
+
+    /// <summary>The session object the interaction override was written to, to notice a new one.</summary>
+    private static object? overriddenSession;
+
+    /// <summary>The interaction value written to CelesteNet's session, or null when it is not overridden.</summary>
+    private static bool? appliedInteractions;
 
     /// <summary>Set while MiaoNet is disconnecting because CelesteNet connected first.</summary>
     private static bool steppingAside;
@@ -110,6 +118,8 @@ internal static class CelesteNetCompat {
     public static void OnFrame() {
         if (!Resolve())
             return;
+
+        SyncInteractions();
 
         MiaoNetContext? context = MiaoNetModule.Instance?.MiaoNetContextOptional;
         bool miaoOnline = context is not null && context.HasConnection;
@@ -190,6 +200,53 @@ internal static class CelesteNetCompat {
 
         if (!bridgeOwnsCelesteNet || Engine.FrameCounter >= nextConnectAttemptFrame)
             ConnectCelesteNetToBridge();
+    }
+
+    /// <summary>
+    /// Mirrors MiaoNet's own "player interactions" setting onto CelesteNet while the bridge is on.
+    /// </summary>
+    /// <remarks>
+    /// With the bridge on, MiaoNet's interactions are off by design: the remote bodies are CelesteNet
+    /// ghosts, so CelesteNet's <c>Interactions</c> setting is the only thing that decides whether
+    /// players can be picked up or booped. Two independent switches with the same meaning is a trap:
+    /// a player who turned CelesteNet's side off earlier gets a world where neither pipeline allows
+    /// interactions, and nothing tells them why. Following MiaoNet's setting keeps one switch.
+    /// <para>
+    /// The value goes to the session override rather than the setting, so the player's CelesteNet
+    /// settings file is left alone. It is cleared again when the bridge turns off, which hands the
+    /// decision back to CelesteNet itself.
+    /// </para>
+    /// </remarks>
+    private static void SyncInteractions() {
+        object? session = sessionProperty?.GetValue(null);
+        if (session is null || interactionsOverrideProperty is null)
+            return;
+
+        bool? desired = MiaoNetModule.IsCelesteNetBridgeActive
+            ? MiaoNetModule.Settings.PlayerInteractions
+            : null;
+
+        if (ReferenceEquals(session, overriddenSession) && desired == appliedInteractions)
+            return;
+
+        bool changed = desired != appliedInteractions;
+
+        try {
+            interactionsOverrideProperty.SetValue(session, desired);
+            overriddenSession = session;
+            appliedInteractions = desired;
+
+            // A new session object needs the same value again, which is not worth a log line.
+            if (!changed)
+                return;
+
+            Logger.Info(LT.MiaoNet, desired is null
+                ? "CelesteNet interactions follow its own setting again"
+                : "CelesteNet interactions follow MiaoNet's interactions: " + (desired.Value ? "on" : "off")
+            );
+        } catch (Exception e) {
+            Logger.Warn(LT.MiaoNet, "Failed to mirror the interaction setting onto CelesteNet: " + e.Message);
+        }
     }
 
     /// <summary>
@@ -322,12 +379,23 @@ internal static class CelesteNetCompat {
         connectedProperty = settingsType?.GetProperty("Connected");
         wantsToBeConnectedProperty = settingsType?.GetProperty("WantsToBeConnected");
         serverOverrideProperty = settingsType?.GetProperty("ServerOverride");
+        sessionProperty = moduleType.GetProperty("Session", BindingFlags.Public | BindingFlags.Static);
+        interactionsOverrideProperty = sessionProperty?.PropertyType
+            .GetProperty("InteractionsOverride", BindingFlags.Public | BindingFlags.Instance);
         stopMethod = moduleType.GetMethod("Stop", BindingFlags.Public | BindingFlags.Instance);
 
         if (settingsProperty is null || connectedProperty is null || wantsToBeConnectedProperty is null
             || serverOverrideProperty is null || stopMethod is null) {
             Logger.Warn(LT.MiaoNet, "CelesteNet has an unknown shape; the two clients cannot be kept apart");
             moduleType = null;
+        }
+
+        // The interaction override is a convenience, not a requirement: without it the two switches
+        // simply stay independent, which is how CelesteNet behaved before the bridge existed.
+        if (sessionProperty is null || interactionsOverrideProperty is null) {
+            sessionProperty = null;
+            interactionsOverrideProperty = null;
+            Logger.Warn(LT.MiaoNet, "CelesteNet has no session interaction override; its own setting stays authoritative");
         }
 
         return moduleType is not null;
