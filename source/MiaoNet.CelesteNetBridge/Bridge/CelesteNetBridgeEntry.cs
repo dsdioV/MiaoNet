@@ -198,7 +198,8 @@ public static class CelesteNetBridgeEntry {
             ProtocolVersion,
             NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame),
             // Appended, never inserted: existing peers index the first entry by local id 1.
-            NetModPacketEntry.Create<PacketBridgeIdentityRequest>(PacketScope.Map, OnIdentityRequest)
+            NetModPacketEntry.Create<PacketBridgeIdentityRequest>(PacketScope.Map, OnIdentityRequest),
+            NetModPacketEntry.Create<PacketBridgeLeave>(PacketScope.Map, OnRemoteLeave)
         ));
 
         Initialized = true;
@@ -281,6 +282,7 @@ public static class CelesteNetBridgeEntry {
 
         // Before anything is torn down: a peer that is never told keeps the last ghost it saw, frozen in
         // place and still grabbable. The frames have to be written while the stream is still up.
+        BroadcastLeave();
         AnnounceEveryoneLeftBeforeShutdown();
 
         ResetRedirect();
@@ -296,6 +298,10 @@ public static class CelesteNetBridgeEntry {
             sessions.Clear();
             peers.Clear();
         }
+
+        // A pending identity answer belonged to the stream that just went away.
+        identityResponsePending = false;
+        identityResponseTarget = null;
 
         suppress?.Uninstall();
         suppress = null;
@@ -785,6 +791,59 @@ public static class CelesteNetBridgeEntry {
         identityResponseTarget = null;
         Logger.Log(LogLevel.Verbose, "cnet-bridge", "sent our identity frames to peers");
         return true;
+    }
+
+    /// <summary>
+    /// Tells peers that this client stopped rendering remote players through CelesteNet, because the
+    /// bridge is being switched off or the game is closing.
+    /// </summary>
+    /// <remarks>
+    /// Peers have no other way to tell that apart from a player who is simply standing still: the frames
+    /// just stop, and CelesteNet's client never times a ghost out. Turning the bridge off also drops the
+    /// MiaoNet connection for a moment, which makes the server announce the leave by itself, so this is
+    /// what removes the ghost in the window before that happens -- and it keeps working if the reconnect
+    /// hands the same player id straight back.
+    /// <para>
+    /// Sent before anything is torn down, because unregistering the NetMod is what ends the connection
+    /// and the write has to be queued while there is still a stream to queue it on. If that queued write
+    /// does lose the race against the teardown, the reconnect that follows drops the connection anyway,
+    /// and the leave the server broadcasts then covers the same ground a moment later; this packet is
+    /// what makes it immediate instead of nearly immediate.
+    /// </para>
+    /// </remarks>
+    private static void BroadcastLeave() {
+        if (netMod is not { } target || !MiaoNetNetMods.IsConnected)
+            return;
+
+        try {
+            target.Send(new PacketBridgeLeave());
+            Logger.Log(LogLevel.Info, "cnet-bridge", "told peers this client stopped rendering through CelesteNet");
+        } catch (Exception e) {
+            Logger.Log(
+                LogLevel.Warn, "cnet-bridge",
+                "could not tell peers we are leaving: " + e.GetType().Name + ": " + e.Message
+            );
+        }
+    }
+
+    /// <summary>
+    /// A peer turned its bridge off. Its player is still on MiaoNet and still visible; what goes away is
+    /// the CelesteNet ghost, so the body falls back to the MiaoNet one (<c>MiaoNetGhost</c>) instead of
+    /// standing there frozen, named and grabbable through a client that will never hear from it again.
+    /// </summary>
+    private static void OnRemoteLeave(PacketEnvelope envelope, PacketBridgeLeave packet) {
+        uint sender = (uint)envelope.SenderPlayerID;
+
+        CelesteNetFakeSession[] targets;
+        lock (sessions)
+            targets = [.. sessions];
+
+        foreach (CelesteNetFakeSession session in targets) {
+            if (session.PlayerId == sender)
+                continue;
+
+            AnnouncePlayerLeft(session, sender, "turned its bridge off");
+        }
     }
 
     /// <summary>
