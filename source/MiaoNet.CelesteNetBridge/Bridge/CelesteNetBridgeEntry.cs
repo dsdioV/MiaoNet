@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using Celeste.Mod.CelesteNet.Client;
 using Celeste.Mod.MiaoNet;
@@ -46,6 +47,12 @@ public static class CelesteNetBridgeEntry {
     /// <summary>Ghost-birth gate for every remote player, per session.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, Dictionary<uint, CelesteNetRemoteFeed>> remoteFeeds = [];
 
+    /// <summary>
+    /// When each remote player last sent anything, per session. CelesteNet's client never times a ghost
+    /// out, so a peer that disappears without a word would leave one standing at its last position.
+    /// </summary>
+    private static readonly Dictionary<CelesteNetFakeSession, CelesteNetPeerWatch> peers = [];
+
     /// <summary>Our own identity frames per session, kept for peers who joined after we sent them.</summary>
     private static readonly Dictionary<CelesteNetFakeSession, CelesteNetIdentityCache> localIdentities = [];
 
@@ -72,6 +79,19 @@ public static class CelesteNetBridgeEntry {
     /// receives them in the order they were decided on: playerInfo before the graphics it is bound to.
     /// </summary>
     private static readonly Dictionary<CelesteNetFakeSession, Task> sendTails = [];
+
+    /// <summary>
+    /// How long a remote player may stay silent before the bridge treats them as gone.
+    /// </summary>
+    /// <remarks>
+    /// MiaoNet sends a player frame at tick rate, but it stops while the sender is paused, dead or in a
+    /// freeze frame, so silence alone is not proof of absence: a paused player is skipped by
+    /// <see cref="AnnounceSilentPlayers"/> instead of being timed out. Ten seconds is what is left for
+    /// everything else, well past a death animation, and long enough that a wrong guess is rare. Being
+    /// wrong in this direction removes a player who is standing right there, which is worse than
+    /// noticing a real absence a few seconds late.
+    /// </remarks>
+    private const double PeerSilenceTimeoutSeconds = 10;
 
     /// <summary>
     /// How long <see cref="Shutdown"/> waits for the leave frames to reach the local client. This runs on
@@ -272,8 +292,10 @@ public static class CelesteNetBridgeEntry {
             server = null;
         }
 
-        lock (sessions)
+        lock (sessions) {
             sessions.Clear();
+            peers.Clear();
+        }
 
         suppress?.Uninstall();
         suppress = null;
@@ -366,6 +388,7 @@ public static class CelesteNetBridgeEntry {
             localIdentities[session] = new();
             identityRequesters[session] = new();
             remoteFeeds[session] = [];
+            peers[session] = new();
         }
 
         session.FrameReceived += OnLocalFrame;
@@ -389,6 +412,7 @@ public static class CelesteNetBridgeEntry {
             localIdentities.Remove(session);
             identityRequesters.Remove(session);
             remoteFeeds.Remove(session);
+            peers.Remove(session);
             sendTails.Remove(session);
         }
     }
@@ -402,6 +426,7 @@ public static class CelesteNetBridgeEntry {
     private static void OnSessionHeartbeat(CelesteNetFakeSession session) {
         WatchPlayerLeaves();
         RestartSessionsWithStaleIdentity();
+        AnnounceSilentPlayers(session);
 
         bool connected = MiaoNetNetMods.IsConnected;
         if (miaoNetWasConnected && !connected)
@@ -412,6 +437,39 @@ public static class CelesteNetBridgeEntry {
 
         miaoNetWasConnected = connected;
     }
+
+    /// <summary>
+    /// A teammate who turns the bridge off, loses the connection or crashes stops sending without ever
+    /// saying goodbye. Nothing else notices: CelesteNet's client keeps the last ghost it built, so the
+    /// player would stand there frozen, named, and grabbable. Silence is the only signal there is.
+    /// </summary>
+    private static void AnnounceSilentPlayers(CelesteNetFakeSession session) {
+        CelesteNetPeerWatch? watch;
+        lock (sessions)
+            peers.TryGetValue(session, out watch);
+
+        if (watch is null)
+            return;
+
+        foreach (uint id in watch.TakeExpired(Now, PeerSilenceTimeoutSeconds)) {
+            // A paused player sends no frames on purpose. Their ghost has to stay.
+            if (IsPeerPaused(id)) {
+                watch.Saw(id, Now);
+                continue;
+            }
+
+            AnnouncePlayerLeft(session, id, "went silent");
+        }
+    }
+
+    /// <summary>Whether MiaoNet last reported this player as paused.</summary>
+    private static bool IsPeerPaused(uint id)
+        => MiaoNetModule.Instance?.MiaoNetContext?.ClientState is { } state
+            && state.Players.TryGetValue((int)id, out OnlinePlayer? player)
+            && player.IsPaused;
+
+    /// <summary>Monotonic seconds, for the only thing the bridge times: how long a peer has been quiet.</summary>
+    private static double Now => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
     /// <summary>
     /// Subscribes to MiaoNet's player events. Idempotent, because the context is created lazily the
@@ -564,6 +622,8 @@ public static class CelesteNetBridgeEntry {
                 ReportSkip(session, typeId ?? "<unparsed>", "it describes the sender's server, not this one");
                 continue;
             }
+
+            WatchPeer(session, sender);
 
             if (IntroducePlayer(session, sender)) {
                 // The real client can only resolve refs to a player it has seen a DataPlayerInfo for.
@@ -749,6 +809,8 @@ public static class CelesteNetBridgeEntry {
     /// </summary>
     /// <param name="reason">Only used for the log line.</param>
     private static void AnnouncePlayerLeft(CelesteNetFakeSession session, uint id, string reason) {
+        ForgetPeer(session, id);
+
         if (!ForgetIntroduced(session, id))
             return;
 
@@ -757,6 +819,19 @@ public static class CelesteNetBridgeEntry {
             QueueSend(session, CelesteNetDataTypes.PlayerInfoLeave(id));
 
         Logger.Log(LogLevel.Verbose, "cnet-bridge", $"announced that #{id} {reason}");
+    }
+
+    /// <summary>Records that a peer is alive; the silence timer only ever restarts here.</summary>
+    private static void WatchPeer(CelesteNetFakeSession session, uint id) {
+        lock (sessions)
+            if (peers.TryGetValue(session, out CelesteNetPeerWatch? watch))
+                watch.Saw(id, Now);
+    }
+
+    private static void ForgetPeer(CelesteNetFakeSession session, uint id) {
+        lock (sessions)
+            if (peers.TryGetValue(session, out CelesteNetPeerWatch? watch))
+                watch.Forget(id);
     }
 
     /// <summary>
@@ -773,6 +848,8 @@ public static class CelesteNetBridgeEntry {
             introduced.Clear();
             if (remoteFeeds.TryGetValue(session, out Dictionary<uint, CelesteNetRemoteFeed>? feeds))
                 feeds.Clear();
+            if (peers.TryGetValue(session, out CelesteNetPeerWatch? watch))
+                watch.Clear();
         }
 
         foreach (uint id in ids) {
