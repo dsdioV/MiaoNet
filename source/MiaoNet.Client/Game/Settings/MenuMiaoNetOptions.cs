@@ -202,7 +202,7 @@ public static class MenuMiaoNetOptions
             bridgeOption.Change(v =>
             {
                 settings.CelesteNetBridgeEnabled = v;
-                MiaoNetModule.ApplyCelesteNetBridgeSetting(v, playerRequested: true);
+                MiaoNetModule.ApplyCelesteNetBridgeSetting(v);
             });
             menu.Add(Track(bridgeOption, () => MiaoNetModule.Settings.CelesteNetBridgeEnabled));
             item = bridgeOption;

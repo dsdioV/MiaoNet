@@ -251,8 +251,10 @@ public sealed class MiaoNetModule : EverestModule
     /// <summary>
     /// Switches the bridge while the game runs. Its NetMod is part of the MiaoNet handshake, so
     /// registering or unregistering it drops the current connection; the connection is restored here.
+    /// The switch only arms the bridge: the takeover itself starts when a MiaoNet session exists, so
+    /// flipping it on does not connect MiaoNet on the player's behalf.
     /// </summary>
-    internal static void ApplyCelesteNetBridgeSetting(bool enabled, bool playerRequested = false)
+    internal static void ApplyCelesteNetBridgeSetting(bool enabled)
     {
         if (!CelesteNetCompat.IsInstalled || !EnsureCelesteNetBridgeResolved())
             return;
@@ -264,18 +266,7 @@ public sealed class MiaoNetModule : EverestModule
         bool wasConnecting = context is not null && context.HasConnectionOperation && !wasConnected;
 
         if (enabled)
-        {
             StartCelesteNetBridge();
-
-            // The bridge identifies CelesteNet players by their MiaoNet identity, so a bridge without
-            // a MiaoNet session cannot accept CelesteNet at all. Switching the bridge on therefore
-            // also brings MiaoNet online, instead of leaving the switch looking like it did nothing.
-            if (playerRequested && !wasConnected && !wasConnecting)
-            {
-                (context ?? Instance.MiaoNetContext).QueueConnect();
-                Logger.Info(LT.MiaoNet, "CelesteNet bridge enabled, connecting MiaoNet to give CelesteNet an identity");
-            }
-        }
         else
             StopCelesteNetBridge();
 
