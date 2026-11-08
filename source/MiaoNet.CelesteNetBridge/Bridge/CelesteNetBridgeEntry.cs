@@ -53,7 +53,14 @@ public static class CelesteNetBridgeEntry {
     private static CelesteNetFakeServer? server;
     private static CelesteNetSuppression? suppress;
 
+    /// <summary>Whether the bridge switch is on, so its NetMod is declared in the MiaoNet handshake.</summary>
     public static bool Initialized { get; private set; }
+
+    /// <summary>
+    /// Whether the bridge is actually taking CelesteNet over right now: the switch is on and MiaoNet has
+    /// a session. The two are separate on purpose (see <see cref="Engage"/>).
+    /// </summary>
+    public static bool Engaged { get; private set; }
 
     /// <summary>The port the local server listens on, or 0 when it is not running.</summary>
     public static int LocalPort => server?.Port ?? 0;
@@ -106,14 +113,60 @@ public static class CelesteNetBridgeEntry {
             Shutdown();
     }
 
-    /// <summary>Starts the bridge: declares the NetMod, suppresses the CelesteNet UI, opens the port.</summary>
+    /// <summary>
+    /// Takes CelesteNet over, or lets go of it again. MiaoNet calls this whenever its own session comes
+    /// and goes; the switch alone never causes a takeover.
+    /// </summary>
+    public static void SetEngaged(bool engaged) {
+        if (engaged)
+            Engage();
+        else
+            Disengage();
+    }
+
+    /// <summary>
+    /// Turns the switch on: declares the NetMod in the MiaoNet handshake. Nothing is taken over yet.
+    /// </summary>
+    /// <remarks>
+    /// Declaring the NetMod is the one part of the bridge that cannot follow the MiaoNet session.
+    /// Registering or unregistering a NetMod disconnects MiaoNet on purpose (the handshake that was
+    /// already sent no longer matches), so doing it when a session appears would disconnect the very
+    /// session that asked for it, forever. It follows the switch instead, which the player sets by hand.
+    /// </remarks>
     public static void Initialize() {
         if (Initialized)
             return;
 
         WarnAboutUntestedVersion();
 
-        // Whatever the real client was doing before the switch flipped, it is over now.
+        // The declaration has to exist before the MiaoNet handshake goes out.
+        netMod = MiaoNetNetMods.Register(new NetMod(
+            NetModName,
+            ProtocolVersion,
+            NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame)
+        ));
+
+        Initialized = true;
+        Logger.Log(LogLevel.Info, "cnet-bridge",
+            "bridge is on; CelesteNet stays untouched until MiaoNet is connected"
+        );
+    }
+
+    /// <summary>
+    /// Takes CelesteNet over: quiesces it, silences its interface and opens the loopback server it will
+    /// talk to instead of a real one.
+    /// </summary>
+    /// <remarks>
+    /// Everything here is bound to a MiaoNet session: the identity handed to CelesteNet is the player's
+    /// MiaoNet id, and the frames it exchanges are carried inside a MiaoNet NetMod. With the switch on
+    /// but no session there is nothing to carry anything, so CelesteNet is left exactly as the player
+    /// left it, free to join a real server.
+    /// </remarks>
+    public static void Engage() {
+        if (!Initialized || Engaged)
+            return;
+
+        // Whatever the real client was doing before the session showed up, it is over now.
         Quiesce();
 
         suppress = new();
@@ -142,18 +195,35 @@ public static class CelesteNetBridgeEntry {
             return;
         }
 
-        // The declaration has to exist before the MiaoNet handshake goes out.
-        netMod = MiaoNetNetMods.Register(new NetMod(
-            NetModName,
-            ProtocolVersion,
-            NetModPacketEntry.Create<PacketBridgeFrame>(PacketScope.Map, OnRemoteFrame)
-        ));
-
-        Initialized = true;
+        Engaged = true;
         Logger.Log(LogLevel.Info, "cnet-bridge",
             $"relaying CelesteNet through 127.0.0.1:{server.Port}"
             + (server.UsedFallbackPort ? " (the default port 17230 was busy)" : "")
         );
+    }
+
+    /// <summary>Lets go of CelesteNet again, putting its interface and its connection back in the player's hands.</summary>
+    public static void Disengage() {
+        if (!Engaged)
+            return;
+
+        Engaged = false;
+        ResetRedirect();
+        Quiesce();
+
+        if (server != null) {
+            server.SessionStarted -= OnSessionStarted;
+            server.Dispose();
+            server = null;
+        }
+
+        lock (sessions)
+            sessions.Clear();
+
+        suppress?.Uninstall();
+        suppress = null;
+
+        Logger.Log(LogLevel.Info, "cnet-bridge", "MiaoNet is gone; CelesteNet is left alone again");
     }
 
     /// <summary>
@@ -191,20 +261,8 @@ public static class CelesteNetBridgeEntry {
         if (!Initialized)
             return;
 
+        Disengage();
         Initialized = false;
-        ResetRedirect();
-        Quiesce();
-        if (server != null) {
-            server.SessionStarted -= OnSessionStarted;
-            server.Dispose();
-            server = null;
-        }
-
-        lock (sessions)
-            sessions.Clear();
-
-        suppress?.Uninstall();
-        suppress = null;
 
         netMod?.Dispose();
         netMod = null;

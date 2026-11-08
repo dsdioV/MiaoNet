@@ -30,6 +30,8 @@ public sealed class MiaoNetModule : EverestModule
     private static bool celesNetBridgeActive;
     private static bool celesNetBridgeResolved;
     private static MethodInfo? celesNetBridgeSetEnabled;
+    private static MethodInfo? celesNetBridgeSetEngaged;
+    private static PropertyInfo? celesNetBridgeEngaged;
     private static PropertyInfo? celesNetBridgeInitialized;
     private static PropertyInfo? celesNetBridgeLocalPort;
     private static PropertyInfo? celesNetBridgeTargetsBridge;
@@ -49,8 +51,21 @@ public sealed class MiaoNetModule : EverestModule
     internal static bool IsCelesteNetPointedAtBridge
         => celesNetBridgeTargetsBridge?.GetValue(null) is true;
 
-    /// <summary>Whether the bridge is running, so CelesteNet talks to us instead of to a server.</summary>
-    internal static bool IsCelesteNetBridgeActive => celesNetBridgeActive;
+    /// <summary>
+    /// Whether the bridge is taking CelesteNet over right now: the switch is on and MiaoNet has a
+    /// session to give CelesteNet an identity.
+    /// </summary>
+    /// <remarks>
+    /// A switch that is on while MiaoNet is offline changes nothing. The identity CelesteNet gets is the
+    /// player's MiaoNet id and its frames travel inside a MiaoNet NetMod, so there is nothing to take
+    /// over before a session exists; the player is free to connect CelesteNet wherever they like.
+    /// </remarks>
+    internal static bool IsCelesteNetBridgeActive => celesNetBridgeActive && CelesteNetBridgeEngaged;
+
+    /// <summary>Whether the bridge switch is on, regardless of whether MiaoNet has a session yet.</summary>
+    internal static bool IsCelesteNetBridgeSwitchedOn => celesNetBridgeActive;
+
+    private static bool CelesteNetBridgeEngaged => celesNetBridgeEngaged?.GetValue(null) is true;
 
     private static readonly DetourConfig RootConfig = new("MiaoNet");
     private static readonly DetourConfig RootBeforeAllConfig = new("MiaoNet.BeforeAll", before: ["*"]);
@@ -197,6 +212,12 @@ public sealed class MiaoNetModule : EverestModule
             celesNetBridgeSetEnabled = entry?.GetMethod(
                 "SetEnabled", BindingFlags.Public | BindingFlags.Static
             );
+            celesNetBridgeSetEngaged = entry?.GetMethod(
+                "SetEngaged", BindingFlags.Public | BindingFlags.Static
+            );
+            celesNetBridgeEngaged = entry?.GetProperty(
+                "Engaged", BindingFlags.Public | BindingFlags.Static
+            );
             celesNetBridgeInitialized = entry?.GetProperty(
                 "Initialized", BindingFlags.Public | BindingFlags.Static
             );
@@ -206,13 +227,14 @@ public sealed class MiaoNetModule : EverestModule
             celesNetBridgeTargetsBridge = entry?.GetProperty(
                 "IsCelesteNetPointedAtTheBridge", BindingFlags.Public | BindingFlags.Static
             );
-            if (celesNetBridgeSetEnabled is null || celesNetBridgeInitialized is null
+            if (celesNetBridgeSetEnabled is null || celesNetBridgeSetEngaged is null
+                || celesNetBridgeEngaged is null || celesNetBridgeInitialized is null
                 || celesNetBridgeLocalPort is null || celesNetBridgeTargetsBridge is null)
             {
                 Logger.Log(
                     LogLevel.Error, LT.MiaoNet,
                     "CelesteNet bridge entry point is incomplete: CelesteNetBridgeEntry needs public statics " +
-                    "SetEnabled(bool), Initialized, LocalPort and IsCelesteNetPointedAtTheBridge"
+                    "SetEnabled(bool), SetEngaged(bool), Engaged, Initialized, LocalPort and IsCelesteNetPointedAtTheBridge"
                 );
                 return false;
             }
@@ -259,6 +281,28 @@ public sealed class MiaoNetModule : EverestModule
 
         if (context is not null && !context.HasConnectionOperation && (wasConnected || wasConnecting))
             context.QueueConnect();
+    }
+
+    /// <summary>
+    /// Brings the takeover in line with the MiaoNet session: on while a session exists, off while it does
+    /// not. Called every frame by <see cref="CelesteNetCompat"/>.
+    /// </summary>
+    internal static void SyncCelesteNetBridgeEngagement(bool miaoNetOnline)
+    {
+        if (!celesNetBridgeActive || celesNetBridgeSetEngaged is null)
+            return;
+
+        if (CelesteNetBridgeEngaged == miaoNetOnline)
+            return;
+
+        try
+        {
+            celesNetBridgeSetEngaged.Invoke(null, [miaoNetOnline]);
+        }
+        catch (Exception e)
+        {
+            Logger.Warn(LT.MiaoNet, "Failed to change the CelesteNet bridge takeover: " + e.Message);
+        }
     }
 
     private static void StartCelesteNetBridge()

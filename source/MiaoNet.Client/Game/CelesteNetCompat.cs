@@ -10,9 +10,14 @@ namespace Celeste.Mod.MiaoNet;
 /// MiaoNet step aside, and connecting MiaoNet disconnects CelesteNet first.
 /// </para>
 /// <para>
-/// With the bridge on, CelesteNet talks to the bridge's local server. Turning the switch on connects
-/// it there by itself (after dropping whatever it was connected to), and disconnecting it from
-/// CelesteNet's own menu turns the switch back off, so the switch and the connection always agree.
+/// With the bridge on and MiaoNet connected, CelesteNet talks to the bridge's local server. The
+/// takeover starts when the MiaoNet session does, connects CelesteNet there by itself (after dropping
+/// whatever it was connected to), and disconnecting CelesteNet from its own menu turns the switch back
+/// off, so the switch and the connection always agree.
+/// </para>
+/// <para>
+/// With the bridge on but MiaoNet offline, nothing is taken over: there is no identity to give
+/// CelesteNet and no pipeline to carry its frames, so the player can join a real server with it.
 /// </para>
 /// <para>
 /// Everything here goes through reflection: MiaoNet.dll must never reference CelesteNet types, or the
@@ -29,9 +34,6 @@ internal static class CelesteNetCompat {
     /// then its disappearance is the bridge's doing, not the player disconnecting CelesteNet.
     /// </summary>
     private const ulong BridgeStartGraceFrames = 120;
-
-    /// <summary>Frames between attempts to bring MiaoNet online for CelesteNet.</summary>
-    private const ulong MiaoNetKickFrames = 300;
 
     private static bool resolved;
     private static Type? moduleType;
@@ -58,15 +60,11 @@ internal static class CelesteNetCompat {
     /// <summary>Whether the bridge started CelesteNet and keeps it connected while the switch is on.</summary>
     private static bool bridgeOwnsCelesteNet;
 
-    /// <summary>Set while CelesteNet was dropped because MiaoNet has no session to give it an identity.</summary>
-    private static bool waitingForMiaoNet;
-
     /// <summary>Whether CelesteNet had a live connection, so losing it means the player disconnected it.</summary>
     private static bool celesteNetWasAlive;
 
     private static ulong nextConnectAttemptFrame;
     private static ulong disconnectGraceUntilFrame;
-    private static ulong nextMiaoNetKickFrame;
 
     /// <summary>Whether the CelesteNet client mod is installed and enabled.</summary>
     public static bool IsInstalled => Resolve();
@@ -112,8 +110,8 @@ internal static class CelesteNetCompat {
 
     /// <summary>
     /// Called every frame. With the bridge off, a CelesteNet connection that comes up while MiaoNet is
-    /// connected makes MiaoNet step aside. With the bridge on, CelesteNet is connected to the local
-    /// server and the switch follows the player when they disconnect it.
+    /// connected makes MiaoNet step aside. With the bridge on and MiaoNet connected, CelesteNet is
+    /// connected to the local server and the switch follows the player when they disconnect it.
     /// </summary>
     public static void OnFrame() {
         if (!Resolve())
@@ -124,7 +122,7 @@ internal static class CelesteNetCompat {
         MiaoNetContext? context = MiaoNetModule.Instance?.MiaoNetContextOptional;
         bool miaoOnline = context is not null && context.HasConnection;
 
-        if (!MiaoNetModule.IsCelesteNetBridgeActive) {
+        if (!MiaoNetModule.IsCelesteNetBridgeSwitchedOn) {
             if (bridgeWasActive) {
                 bridgeWasActive = false;
                 ForgetBridgeOwnership();
@@ -133,7 +131,20 @@ internal static class CelesteNetCompat {
             return;
         }
 
-        // The switch just turned on. Whatever CelesteNet was connected to is being dropped by the
+        // The takeover belongs to the session, not to the switch: it starts when MiaoNet connects and
+        // ends when it drops.
+        MiaoNetModule.SyncCelesteNetBridgeEngagement(miaoOnline);
+
+        if (!MiaoNetModule.IsCelesteNetBridgeActive) {
+            // MiaoNet is offline, so nothing is taken over and CelesteNet is left to the player.
+            if (bridgeWasActive) {
+                bridgeWasActive = false;
+                ForgetBridgeOwnership();
+            }
+            return;
+        }
+
+        // The takeover just started. Whatever CelesteNet was connected to has been dropped by the
         // bridge, and the connection the bridge starts must not be mistaken for the player's.
         if (!bridgeWasActive) {
             bridgeWasActive = true;
@@ -145,17 +156,6 @@ internal static class CelesteNetCompat {
         bool pending = IsPending;
 
         if (connected || pending) {
-            if (!miaoOnline) {
-                // The bridge identifies CelesteNet players by their MiaoNet identity; without a session
-                // the local server can only refuse them. Bring MiaoNet online instead of dropping
-                // CelesteNet until the player works out why nothing stays connected.
-                waitingForMiaoNet = true;
-                celesteNetWasAlive = false;
-                EnsureMiaoNetSession(context);
-                Quiesce();
-                return;
-            }
-
             // Only a connection pointed at the bridge belongs to the bridge. One the player aimed at a
             // real server is their own, and its disconnection must not turn the switch off.
             if (MiaoNetModule.IsCelesteNetPointedAtBridge) {
@@ -168,21 +168,6 @@ internal static class CelesteNetCompat {
         }
 
         // CelesteNet is idle.
-        if (!miaoOnline) {
-            if (bridgeOwnsCelesteNet || celesteNetWasAlive)
-                waitingForMiaoNet = true;
-            celesteNetWasAlive = false;
-            return;
-        }
-
-        if (waitingForMiaoNet) {
-            // MiaoNet is back, so CelesteNet can be given an identity again.
-            waitingForMiaoNet = false;
-            celesteNetWasAlive = false;
-            ConnectCelesteNetToBridge();
-            return;
-        }
-
         if (celesteNetWasAlive) {
             if (Engine.FrameCounter < disconnectGraceUntilFrame) {
                 // The old connection is still tearing down; start the bridge's one instead of treating
@@ -250,35 +235,6 @@ internal static class CelesteNetCompat {
     }
 
     /// <summary>
-    /// Starts a MiaoNet connection so the local CelesteNet server has an identity to hand out. Called
-    /// when CelesteNet tries to connect while MiaoNet is offline, at most once every few seconds.
-    /// </summary>
-    private static void EnsureMiaoNetSession(MiaoNetContext? context) {
-        if (Engine.FrameCounter < nextMiaoNetKickFrame)
-            return;
-
-        nextMiaoNetKickFrame = Engine.FrameCounter + MiaoNetKickFrames;
-        if (context is not null && (context.HasConnection || context.HasConnectionOperation))
-            return;
-
-        try {
-            (context ?? MiaoNetModule.Instance.MiaoNetContext).QueueConnect();
-            Logger.Info(LT.MiaoNet, "CelesteNet is waiting for MiaoNet, connecting MiaoNet to give it an identity");
-        } catch (Exception e) {
-            Logger.Warn(LT.MiaoNet, "Failed to start a MiaoNet connection for CelesteNet: " + e.Message);
-            return;
-        }
-
-        try {
-            context?.StatusComponent.ShowStatusMessage(
-                Dialog.Get("miaonet_cnet_waiting_for_miao_message"), spin: true
-            );
-        } catch (Exception e) {
-            Logger.Warn(LT.MiaoNet, "Could not show the CelesteNet waiting message: " + e.Message);
-        }
-    }
-
-    /// <summary>
     /// Points CelesteNet at the bridge's loopback server and asks it to connect. The bridge does not
     /// intercept CelesteNet's own connect button, so the target is set here, before CelesteNet reads it.
     /// </summary>
@@ -331,7 +287,6 @@ internal static class CelesteNetCompat {
 
     private static void ForgetBridgeOwnership() {
         bridgeOwnsCelesteNet = false;
-        waitingForMiaoNet = false;
         celesteNetWasAlive = false;
     }
 
