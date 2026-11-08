@@ -26,14 +26,13 @@ miaonet_options_cnet_bridge_header= CelesteNet
 miaonet_options_cnet_bridge= 接管 CelesteNet 连接
 miaonet_options_cnet_bridge_tip=
 	让依赖 CelesteNet 的 mod（如 CoopHelper）在 MiaoNet 上正常工作。
-	CelesteNet 自带的界面会被隐藏，连接会被重定向到 MiaoNet 的兼容层。
+	仅在连上 MiaoNet 时接管：CelesteNet 的界面被隐藏，连接交给 MiaoNet 的兼容层。
 	关闭时 CelesteNet 完全不受影响。
 	但无论开关如何，MiaoNet 与 CelesteNet 不能同时连接：
 	连上其中一个会自动断开另一个。
 
 miaonet_cnet_took_over_message= 检测到 CelesteNet 已连接，MiaoNet 已自动断开。
 miaonet_cnet_bridge_off_message= CelesteNet 已断开，接管 CelesteNet 连接已自动关闭。
-miaonet_cnet_waiting_for_miao_message= 正在等待 MiaoNet；连上后 CelesteNet 会自动加入。
 
 miaonet_options_visuals= 视觉
 miaonet_options_show_avatar= 显示头像
