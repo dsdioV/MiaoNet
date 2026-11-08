@@ -150,6 +150,7 @@ public sealed class MiaoNetModule : EverestModule
 
     public override void Unload()
     {
+        CelesteNetCompat.RestoreInteractions();
         ShutdownCelesteNetBridge();
         miaoNetContext?.Disconnect();
         ClientRC.Stop();
