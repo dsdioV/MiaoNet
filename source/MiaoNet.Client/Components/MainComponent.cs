@@ -258,10 +258,14 @@ public sealed partial class MainComponent : MiaoNetComponent
         }
         SafeGuard.Assert(!(flags.HasFlag(FFlags.HasFollowerInitials) && flags.HasFlag(FFlags.HasFollowerDeltas)));
 
-        if (player.Holding is not null)
+        // Holdable.Release() clears Holder but not the holder's Player.Holding, and CelesteNet
+        // releases a remote ghost that way the moment it stops being interactive. Re-check Holder
+        // so a holdable one frame away from being dropped is sent as "not holding" instead of
+        // dereferencing a null holder.
+        if (player.Holding is { Holder: { } heldBy } held)
         {
             flags |= FFlags.HasHoldable;
-            holdableInfo = FetchHoldableInfo(player.Holding, selfState.HoldableInfo);
+            holdableInfo = FetchHoldableInfo(held, heldBy, selfState.HoldableInfo);
         }
 
         selfState.StateFlags = stateFlags;
@@ -301,10 +305,9 @@ public sealed partial class MainComponent : MiaoNetComponent
     }
 
     #region holdable & follower info fetching
-    private static HoldableInfo FetchHoldableInfo(Holdable holdable, in HoldableInfo previous)
+    private static HoldableInfo FetchHoldableInfo(Holdable holdable, Entity holder, in HoldableInfo previous)
     {
         Entity entity = holdable.Entity;
-        Entity holder = holdable.Holder;
         Vector2 offset = entity.Position - holder.Position;
         Vector2? offsetN = (previous.Type != HoldableType.None && previous.Offset == offset) ? null : offset;
 
@@ -452,7 +455,7 @@ public sealed partial class MainComponent : MiaoNetComponent
             PlayerSpriteMode = player.Sprite.Mode,
             FollowerInfos = FetchFollowerInitials(player.Leader.Entity, player.Leader.Followers, MaxFollowersCount),
             WindDirection = player.windDirection,
-            HoldableInfo = player.Holding is not null ? FetchHoldableInfo(player.Holding, new()) : new(),
+            HoldableInfo = player.Holding is { Holder: { } heldBy } held ? FetchHoldableInfo(held, heldBy, new()) : new(),
             StateFlags = stateFlags
         };
 
