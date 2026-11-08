@@ -41,14 +41,14 @@ internal static class CelesteNetCompat {
     private static PropertyInfo? connectedProperty;
     private static PropertyInfo? wantsToBeConnectedProperty;
     private static PropertyInfo? serverOverrideProperty;
-    private static PropertyInfo? sessionProperty;
-    private static PropertyInfo? interactionsOverrideProperty;
+    private static PropertyInfo? inGameSettingsProperty;
+    private static PropertyInfo? interactionsProperty;
     private static MethodInfo? stopMethod;
 
-    /// <summary>The session object the interaction override was written to, to notice a new one.</summary>
-    private static object? overriddenSession;
+    /// <summary>The value CelesteNet's own interaction setting had before the bridge overwrote it.</summary>
+    private static bool? savedInteractions;
 
-    /// <summary>The interaction value written to CelesteNet's session, or null when it is not overridden.</summary>
+    /// <summary>The value the bridge last wrote, or null when it never wrote one.</summary>
     private static bool? appliedInteractions;
 
     /// <summary>Set while MiaoNet is disconnecting because CelesteNet connected first.</summary>
@@ -188,49 +188,78 @@ internal static class CelesteNetCompat {
     }
 
     /// <summary>
-    /// Mirrors MiaoNet's own "player interactions" setting onto CelesteNet while the bridge is on.
+    /// Mirrors MiaoNet's own "player interactions" setting onto CelesteNet's while the bridge is on.
     /// </summary>
     /// <remarks>
     /// With the bridge on, MiaoNet's interactions are off by design: the remote bodies are CelesteNet
-    /// ghosts, so CelesteNet's <c>Interactions</c> setting is the only thing that decides whether
+    /// ghosts, so CelesteNet's own <c>Interactions</c> setting is the only thing that decides whether
     /// players can be picked up or booped. Two independent switches with the same meaning is a trap:
     /// a player who turned CelesteNet's side off earlier gets a world where neither pipeline allows
     /// interactions, and nothing tells them why. Following MiaoNet's setting keeps one switch.
     /// <para>
-    /// The value goes to the session override rather than the setting, so the player's CelesteNet
-    /// settings file is left alone. It is cleared again when the bridge turns off, which hands the
-    /// decision back to CelesteNet itself.
+    /// CelesteNet only exposes this as a settings entry, so the write lands in the player's CelesteNet
+    /// settings file: the value it had is remembered and put back when the takeover ends, but a crash
+    /// in between leaves MiaoNet's value behind. A change the player makes to that entry while the
+    /// bridge is on is overwritten again on the next frame, which is the point of the mirror.
     /// </para>
     /// </remarks>
     private static void SyncInteractions() {
-        object? session = sessionProperty?.GetValue(null);
-        if (session is null || interactionsOverrideProperty is null)
+        if (inGameSettingsProperty is null || interactionsProperty is null)
+            return;
+
+        object? inGame = inGameSettingsProperty.GetValue(Settings);
+        if (inGame is null)
             return;
 
         bool? desired = MiaoNetModule.IsCelesteNetBridgeActive
             ? MiaoNetModule.Settings.PlayerInteractions
             : null;
 
-        if (ReferenceEquals(session, overriddenSession) && desired == appliedInteractions)
+        if (desired == appliedInteractions)
             return;
 
-        bool changed = desired != appliedInteractions;
-
         try {
-            interactionsOverrideProperty.SetValue(session, desired);
-            overriddenSession = session;
-            appliedInteractions = desired;
+            if (desired is null) {
+                // The takeover ended: give the player back the value they had before it started.
+                if (savedInteractions is null)
+                    return;
 
-            // A new session object needs the same value again, which is not worth a log line.
-            if (!changed)
+                RestoreInteractions();
+                Logger.Info(LT.MiaoNet, "CelesteNet interactions follow its own setting again");
                 return;
+            }
 
-            Logger.Info(LT.MiaoNet, desired is null
-                ? "CelesteNet interactions follow its own setting again"
-                : "CelesteNet interactions follow MiaoNet's interactions: " + (desired.Value ? "on" : "off")
+            if (appliedInteractions is null && interactionsProperty.GetValue(inGame) is bool current)
+                savedInteractions = current;
+
+            interactionsProperty.SetValue(inGame, desired.Value);
+            appliedInteractions = desired;
+            Logger.Info(
+                LT.MiaoNet,
+                "CelesteNet interactions follow MiaoNet's interactions: " + (desired.Value ? "on" : "off")
             );
         } catch (Exception e) {
             Logger.Warn(LT.MiaoNet, "Failed to mirror the interaction setting onto CelesteNet: " + e.Message);
+        }
+    }
+
+    /// <summary>
+    /// Puts CelesteNet's interaction setting back the way the player had it. Called when the mod
+    /// unloads, since the mirror otherwise lives on in their CelesteNet settings file.
+    /// </summary>
+    public static void RestoreInteractions() {
+        if (savedInteractions is not { } original || inGameSettingsProperty is null || interactionsProperty is null)
+            return;
+
+        try {
+            object? inGame = inGameSettingsProperty.GetValue(Settings);
+            if (inGame is not null)
+                interactionsProperty.SetValue(inGame, original);
+        } catch (Exception e) {
+            Logger.Warn(LT.MiaoNet, "Failed to give CelesteNet its interaction setting back: " + e.Message);
+        } finally {
+            savedInteractions = null;
+            appliedInteractions = null;
         }
     }
 
@@ -334,9 +363,9 @@ internal static class CelesteNetCompat {
         connectedProperty = settingsType?.GetProperty("Connected");
         wantsToBeConnectedProperty = settingsType?.GetProperty("WantsToBeConnected");
         serverOverrideProperty = settingsType?.GetProperty("ServerOverride");
-        sessionProperty = moduleType.GetProperty("Session", BindingFlags.Public | BindingFlags.Static);
-        interactionsOverrideProperty = sessionProperty?.PropertyType
-            .GetProperty("InteractionsOverride", BindingFlags.Public | BindingFlags.Instance);
+        inGameSettingsProperty = settingsType?.GetProperty("InGame");
+        interactionsProperty = inGameSettingsProperty?.PropertyType
+            .GetProperty("Interactions", BindingFlags.Public | BindingFlags.Instance);
         stopMethod = moduleType.GetMethod("Stop", BindingFlags.Public | BindingFlags.Instance);
 
         if (settingsProperty is null || connectedProperty is null || wantsToBeConnectedProperty is null
@@ -345,12 +374,12 @@ internal static class CelesteNetCompat {
             moduleType = null;
         }
 
-        // The interaction override is a convenience, not a requirement: without it the two switches
-        // simply stay independent, which is how CelesteNet behaved before the bridge existed.
-        if (sessionProperty is null || interactionsOverrideProperty is null) {
-            sessionProperty = null;
-            interactionsOverrideProperty = null;
-            Logger.Warn(LT.MiaoNet, "CelesteNet has no session interaction override; its own setting stays authoritative");
+        // Mirroring the interaction switch is a convenience, not a requirement: without it the two
+        // switches simply stay independent, which is how CelesteNet behaved before the bridge existed.
+        if (inGameSettingsProperty is null || interactionsProperty is null) {
+            inGameSettingsProperty = null;
+            interactionsProperty = null;
+            Logger.Warn(LT.MiaoNet, "CelesteNet has no interaction setting to mirror; its own switch stays authoritative");
         }
 
         return moduleType is not null;
